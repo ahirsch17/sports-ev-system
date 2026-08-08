@@ -1,0 +1,18 @@
+[
+  {
+    "fixtureId": "id1000001761301153",
+    "participant1Id": 1001,
+    "participant2Id": 1002,
+    "sportId": 14,
+    "tournamentId": 31,
+    "seasonId": 130281,
+    "statusId": 0,
+    "hasOdds": true,
+    "startTime": "2026-09-10T00:20:00.000Z",
+    "statusName": "Pre-Game",
+    "participant1Name": "Kansas City Chiefs",
+    "participant2Name": "Baltimore Ravens",
+    "sportName": "American Football",
+    "tournamentName": "NFL"
+  }
+]

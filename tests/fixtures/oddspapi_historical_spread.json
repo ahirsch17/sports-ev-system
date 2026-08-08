@@ -1,0 +1,45 @@
+{
+  "fixtureId": "id1000001761301153",
+  "bookmakers": {
+    "pinnacle": {
+      "markets": {
+        "1076": {
+          "outcomes": {
+            "1076": {
+              "players": {
+                "0": [
+                  {
+                    "createdAt": "2026-07-21T20:00:00.000Z",
+                    "price": 1.87,
+                    "active": true
+                  },
+                  {
+                    "createdAt": "2026-07-20T12:00:00.000Z",
+                    "price": 1.91,
+                    "active": false
+                  }
+                ]
+              }
+            },
+            "1077": {
+              "players": {
+                "0": [
+                  {
+                    "createdAt": "2026-07-21T20:00:00.000Z",
+                    "price": 1.95,
+                    "active": true
+                  },
+                  {
+                    "createdAt": "2026-07-20T12:00:00.000Z",
+                    "price": 1.91,
+                    "active": false
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

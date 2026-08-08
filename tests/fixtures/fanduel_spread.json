@@ -1,0 +1,38 @@
+{
+  "attachments": {
+    "events": {
+      "999": {
+        "eventId": 999,
+        "name": "Baltimore Ravens @ Kansas City Chiefs",
+        "openDate": "2026-09-10T00:20:00.000Z"
+      }
+    },
+    "markets": {
+      "555": {
+        "marketId": "555",
+        "eventId": "999",
+        "marketType": "MATCH_HANDICAP_(2-WAY)",
+        "runners": [
+          {
+            "runnerName": "Kansas City Chiefs",
+            "handicap": -3.5,
+            "winRunnerOdds": {
+              "americanDisplayOdds": {
+                "americanOdds": "-110"
+              }
+            }
+          },
+          {
+            "runnerName": "Baltimore Ravens",
+            "handicap": 3.5,
+            "winRunnerOdds": {
+              "americanDisplayOdds": {
+                "americanOdds": "-110"
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

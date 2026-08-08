@@ -1,0 +1,42 @@
+{
+  "eventGroup": {
+    "events": [
+      {
+        "eventId": 12345,
+        "name": "Baltimore Ravens @ Kansas City Chiefs",
+        "startDate": "2026-09-10T00:20:00.000Z"
+      }
+    ],
+    "offerCategories": [
+      {
+        "name": "Game Lines",
+        "offerCategoryId": 100,
+        "offerSubcategoryDescriptors": [
+          {
+            "name": "Spread",
+            "subcategoryId": 4518,
+            "offerSubcategory": {
+              "offers": [
+                {
+                  "eventId": 12345,
+                  "outcomes": [
+                    {
+                      "label": "BAL +3.5",
+                      "oddsAmerican": "+100",
+                      "line": 3.5
+                    },
+                    {
+                      "label": "KC -3.5",
+                      "oddsAmerican": "\u2212115",
+                      "line": -3.5
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

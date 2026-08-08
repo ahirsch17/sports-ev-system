@@ -1,0 +1,26 @@
+{
+  "events": [
+    {
+      "id": "401816233",
+      "date": "2026-07-23T16:15Z",
+      "competitions": [
+        {
+          "status": {"type": {"state": "pre"}},
+          "competitors": [
+            {"homeAway": "away", "team": {"displayName": "San Diego Padres"}},
+            {"homeAway": "home", "team": {"displayName": "Atlanta Braves"}}
+          ],
+          "odds": [
+            {
+              "provider": {"name": "DraftKings"},
+              "moneyline": {
+                "home": {"close": {"odds": "-231"}},
+                "away": {"close": {"odds": "+187"}}
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
