@@ -1,7 +1,7 @@
 # SportsPredictor (sports-ev-system)
 
 **Canonical repo** for SportsPredictor: multi-sport +EV research, paper betting, and CLV tracking.  
-The old standalone [`sportsPredictor`](https://github.com/ahirsch17/sportsPredictor) FastAPI demo is retired — all active code lives here.
+The old standalone FastAPI demo repo has been removed; this is the only codebase.
 
 ## What this is
 
@@ -24,7 +24,7 @@ Starts Docker/Postgres if needed, then opens the dashboard at `http://localhost:
 .\scripts\install-scheduled-task.ps1
 ```
 
-Runs `scheduled-refresh.bat` every 8 hours (odds, +EV picks, settle). Logs: `logs/scheduled-refresh.log`.
+Runs `scheduled-refresh.bat` every 4 hours (odds, +EV picks, settle). Logs: `logs/scheduled-refresh.log`.
 
 ## CLI
 
