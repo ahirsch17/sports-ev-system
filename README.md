@@ -1,14 +1,16 @@
 # SportsPredictor (sports-ev-system)
 
-**Canonical repo** for SportsPredictor: multi-sport +EV research, paper betting, and CLV tracking.  
-The old standalone FastAPI demo repo has been removed; this is the only codebase.
+Multi-sport +EV research toolkit with paper betting and CLV tracking.
 
-## What this is
+This is the canonical codebase. The old standalone FastAPI demo repo is gone.
 
-- **NFL + MLB** models (spread / moneyline), Pinnacle + DraftKings + FanDuel ingestion
-- **Postgres** storage, circuit breakers, scheduled refresh
-- **Streamlit control room** with the original SportsPredictor dark UI (hero, grid, brand)
-- **Paper bets only** — no automatic real-money wagering
+## Features
+
+- NFL and MLB models (spread / moneyline)
+- Odds ingestion from Pinnacle, DraftKings, and FanDuel
+- Postgres storage, circuit breakers, scheduled refresh
+- Streamlit control room UI
+- Paper bets only (no automatic real-money wagering)
 
 ## Quick start (Windows)
 
@@ -16,7 +18,7 @@ The old standalone FastAPI demo repo has been removed; this is the only codebase
 scripts\launch-dashboard.bat
 ```
 
-Starts Docker/Postgres if needed, then opens the dashboard at `http://localhost:8501`.
+Starts Docker/Postgres if needed, then opens `http://localhost:8501`.
 
 ## Automation
 
@@ -24,7 +26,7 @@ Starts Docker/Postgres if needed, then opens the dashboard at `http://localhost:
 .\scripts\install-scheduled-task.ps1
 ```
 
-Runs `scheduled-refresh.bat` every 4 hours (odds, +EV picks, settle). Logs: `logs/scheduled-refresh.log`.
+Runs `scheduled-refresh.bat` every 4 hours. Logs: `logs/scheduled-refresh.log`.
 
 ## CLI
 
@@ -44,8 +46,8 @@ pytest
 python -m sports_ev.cli model-scorecard --sport mlb
 ```
 
-## Repo layout
+## Layout
 
-- `src/sports_ev/` — application code
-- `scripts/` — launchers and Task Scheduler installer
-- `docker-compose.yml` — Postgres on port **5433**
+- `src/sports_ev/`: application code
+- `scripts/`: launchers and Task Scheduler installer
+- `docker-compose.yml`: Postgres on port 5433
