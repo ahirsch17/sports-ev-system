@@ -85,6 +85,28 @@ def find_prediction(predictions: pl.DataFrame, home: str, away: str) -> dict | N
     return None
 
 
+def _no_vig_probs(rows: list[dict[str, Any]]) -> dict[int, float]:
+    """Market fair probability per row: each side's implied prob with the vig split out."""
+    groups: dict[tuple, list[int]] = {}
+    for i, r in enumerate(rows):
+        if r.get("price") is None:
+            continue
+        pt = r.get("point")
+        if pt is None:
+            key = (r["market"], None)
+        else:
+            key = (r["market"], abs(float(pt)) if r["market"] == "spreads" else float(pt))
+        groups.setdefault(key, []).append(i)
+    out: dict[int, float] = {}
+    for idxs in groups.values():
+        imps = {i: american_to_implied(float(rows[i]["price"])) for i in idxs}
+        total = sum(imps.values())
+        for i, p in imps.items():
+            # one-sided quote: strip a typical ~4.5% hold
+            out[i] = p / total if len(imps) >= 2 and total > 0 else p / 1.045
+    return out
+
+
 def compute_main_edges(
     predictions: pl.DataFrame,
     odds_rows: list[dict[str, Any]],
@@ -95,6 +117,9 @@ def compute_main_edges(
     margin_sigma = float(weights.get("margin_sigma", 13.5))
     total_sigma = float(weights.get("total_sigma", 10.0))
     conf_min = float((weights.get("confidence") or {}).get("min_abs_margin", 5.0))
+    # Backtests show closing lines beat the raw model on spreads/totals/ML, so the
+    # probability we price with is pulled most of the way back toward the market.
+    model_w = float((weights.get("market_blend") or {}).get("model_weight", 0.25))
 
     edges: list[dict] = []
     # group odds by event
@@ -109,8 +134,9 @@ def compute_main_edges(
         if not pred:
             continue
         high_conf = abs(float(pred.get("pred_margin") or 0)) >= conf_min
+        market_probs = _no_vig_probs(rows)
 
-        for row in rows:
+        for idx, row in enumerate(rows):
             market = row["market"]
             price = row.get("price")
             if price is None:
@@ -161,6 +187,10 @@ def compute_main_edges(
             else:
                 continue
 
+            raw_prob = model_prob
+            market_prob = market_probs.get(idx)
+            if market_prob is not None:
+                model_prob = model_w * raw_prob + (1.0 - model_w) * market_prob
             ev = expected_value(model_prob, float(price))
             fair = implied_to_american(model_prob)
             # Prefer high-confidence games for live tips
@@ -177,6 +207,8 @@ def compute_main_edges(
                     "point": point,
                     "dk_price": price,
                     "model_prob": round(model_prob, 4),
+                    "raw_model_prob": round(raw_prob, 4),
+                    "market_prob": round(market_prob, 4) if market_prob is not None else None,
                     "fair_american": fair,
                     "dk_implied": round(american_to_implied(float(price)), 4),
                     "ev": round(ev, 4),

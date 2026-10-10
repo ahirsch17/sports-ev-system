@@ -3,15 +3,24 @@
 from __future__ import annotations
 
 import json
+import time
 from datetime import datetime, timezone
 from typing import Any
 
 import requests
 
-from nfl_edge.config import ODDS_API_KEY, ODDS_BOOK, ODDS_DIR, ensure_dirs
+from nfl_edge.config import (
+    ODDS_API_KEY,
+    ODDS_BOOK,
+    ODDS_DIR,
+    ODDS_MIN_REFETCH_SECONDS,
+    ODDS_TTL_SECONDS,
+    ensure_dirs,
+)
 
 SPORT_KEY = "americanfootball_nfl"
 BASE = "https://api.the-odds-api.com/v4"
+_META_PATH = ODDS_DIR / "events_latest.meta.json"
 
 
 class OddsAPIError(RuntimeError):
@@ -53,12 +62,76 @@ def fetch_event_odds(
         raise OddsAPIError(f"Odds API {resp.status_code}: {resp.text[:300]}")
     data = resp.json()
     ensure_dirs()
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    path = ODDS_DIR / f"events_{stamp}.json"
+    now = datetime.now(timezone.utc)
+    path = ODDS_DIR / f"events_{now.strftime('%Y%m%dT%H%M%SZ')}.json"
     path.write_text(json.dumps(data, indent=2))
     # also write latest pointer
     (ODDS_DIR / "events_latest.json").write_text(json.dumps(data, indent=2))
+    _META_PATH.write_text(
+        json.dumps(
+            {
+                "fetched_at": now.isoformat(timespec="seconds"),
+                "book": book,
+                "requests_remaining": _int_header(resp, "x-requests-remaining"),
+                "requests_used": _int_header(resp, "x-requests-used"),
+            }
+        )
+    )
     return data
+
+
+def _int_header(resp: requests.Response, name: str) -> int | None:
+    try:
+        return int(float(resp.headers.get(name, "")))
+    except ValueError:
+        return None
+
+
+def _read_meta() -> dict[str, Any]:
+    if not _META_PATH.exists():
+        return {}
+    try:
+        return json.loads(_META_PATH.read_text())
+    except json.JSONDecodeError:
+        return {}
+
+
+def _not_started(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop in-progress games: live in-game prices aren't comparable to a pregame model."""
+    now = datetime.now(timezone.utc)
+    out = []
+    for ev in events:
+        try:
+            start = datetime.fromisoformat(str(ev.get("commence_time")).replace("Z", "+00:00"))
+        except ValueError:
+            out.append(ev)
+            continue
+        if start > now:
+            out.append(ev)
+    return out
+
+
+def load_live_events(*, force: bool = False) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """
+    DraftKings main lines for games that haven't kicked off, plus fetch metadata.
+
+    Reuses the saved pull while it is younger than ODDS_TTL_SECONDS (or
+    ODDS_MIN_REFETCH_SECONDS when forced) to stay inside the free API quota.
+    Returns ([], meta) when no key is configured or the API is unreachable.
+    """
+    if not ODDS_API_KEY:
+        return [], {"error": "ODDS_API_KEY not set"}
+    latest = ODDS_DIR / "events_latest.json"
+    age = time.time() - latest.stat().st_mtime if latest.exists() else None
+    max_age = ODDS_MIN_REFETCH_SECONDS if force else ODDS_TTL_SECONDS
+    if age is not None and age < max_age:
+        return _not_started(load_cached_events()), {**_read_meta(), "cached": True}
+    try:
+        return _not_started(fetch_event_odds()), _read_meta()
+    except (OddsAPIError, requests.RequestException) as exc:
+        if age is not None and age < 24 * 3600:
+            return _not_started(load_cached_events()), {**_read_meta(), "cached": True, "error": str(exc)[:200]}
+        return [], {"error": str(exc)[:200]}
 
 
 def fetch_player_props(event_id: str, *, book: str | None = None) -> dict[str, Any]:

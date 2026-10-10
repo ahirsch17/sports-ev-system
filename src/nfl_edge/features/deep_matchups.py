@@ -50,8 +50,9 @@ def _safe_mean(series: pl.Series, default: float = 0.0) -> float:
 
 def build_team_style_table(team_stats: pl.DataFrame, *, window: int = 6) -> pl.DataFrame:
     """
-    Prior rolling style features per team-game.
-    One row per season/week/team with roll_* style metrics.
+    Rolling style features per team-game, *including* that game.
+    One row per season/week/team; read it through `style_before`, which only
+    looks at weeks strictly before the game being modeled.
     """
     if team_stats.is_empty():
         return pl.DataFrame()
@@ -83,7 +84,6 @@ def build_team_style_table(team_stats: pl.DataFrame, *, window: int = 6) -> pl.D
     for col in metric_cols:
         df = df.with_columns(
             pl.col(col)
-            .shift(1)
             .rolling_mean(window_size=window, min_samples=2)
             .over("team")
             .alias(f"style_{col}")

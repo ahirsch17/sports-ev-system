@@ -36,10 +36,36 @@ function odds(x) {
   return n > 0 ? `+${n}` : `${n}`;
 }
 
-function showToast(msg) {
+let toastTimer = null;
+function showToast(msg, ms = 1600) {
   toastEl.textContent = clean(msg);
   toastEl.classList.remove("hidden");
-  setTimeout(() => toastEl.classList.add("hidden"), 1600);
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toastEl.classList.add("hidden"), ms);
+}
+
+function ago(iso) {
+  if (!iso) return null;
+  const mins = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
+  if (Number.isNaN(mins)) return null;
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.round(mins / 60);
+  return hrs < 48 ? `${hrs}h ago` : `${Math.round(hrs / 24)}d ago`;
+}
+
+function dataLine(d) {
+  if (!d) return "";
+  const bits = [];
+  const pulled = ago(d.nflverse_as_of);
+  if (pulled) bits.push(`Scores, injuries, depth charts pulled ${pulled}`);
+  if (d.odds_source === "draftkings") {
+    bits.push(`DraftKings lines ${ago(d.odds_as_of) || ""} (${d.dk_games} games)`);
+  } else {
+    bits.push("Lines from nflverse (set ODDS_API_KEY for live DraftKings)");
+  }
+  if (d.odds_requests_remaining != null) bits.push(`${d.odds_requests_remaining} odds credits left`);
+  return `<span class="data-line">${clean(bits.join(" · "))}</span>`;
 }
 
 function actionClass(a) {
@@ -493,7 +519,7 @@ async function loadSport(sport) {
     state.data = data;
     if (sport === "NFL") {
       titleEl.textContent = `NFL ${data.season} · Week ${data.week}`;
-      subEl.innerHTML = `BET when <strong>|margin| ≥ 7</strong>. One card = one game. Same-game only.`;
+      subEl.innerHTML = `BET when <strong>|margin| ≥ 7</strong>. One card = one game. Same-game only.${dataLine(data.data)}`;
     } else if (sport === "CFB") {
       titleEl.textContent = `CFB ${data.season} · Week ${data.week}`;
       subEl.innerHTML = `BET when <strong>|margin| ≥ 10</strong>. Same-game parlays only.`;
@@ -531,6 +557,35 @@ document.querySelectorAll(".filter-btn").forEach((btn) => {
   });
 });
 
-$("#refresh").addEventListener("click", () => loadSport(state.sport));
+function refreshSummary(r) {
+  if (r.sport !== "NFL") return `Pulled latest ${r.sport} data`;
+  const parts = [`${r.final_games} games final this season`];
+  if (r.new_final_games) parts.push(`${r.new_final_games} new since last pull`);
+  const failed = Object.keys(r.errors || {});
+  if (failed.length) parts.push(`could not update ${failed.join(", ")}`);
+  if (r.odds?.events) parts.push(r.odds.cached ? "DK lines reused (pulled under 10m ago)" : "fresh DK lines");
+  else if (r.odds?.error && !r.odds.error.includes("not set")) parts.push(`odds: ${r.odds.error}`);
+  return `Updated: ${parts.join(", ")}`;
+}
+
+async function refreshData() {
+  const btn = $("#refresh");
+  btn.disabled = true;
+  btn.textContent = "Pulling latest...";
+  try {
+    const res = await fetch(`/api/refresh?sport=${state.sport}`, { method: "POST" });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    showToast(refreshSummary(data), 5000);
+  } catch (err) {
+    showToast(`Refresh failed (${err.message}). Showing cached data.`, 5000);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Refresh";
+  }
+  await loadSport(state.sport);
+}
+
+$("#refresh").addEventListener("click", refreshData);
 
 loadSport("NFL");

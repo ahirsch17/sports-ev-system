@@ -119,6 +119,7 @@ body.loading { opacity: 0.72; transition: opacity 0.15s; }
 }
 
 .muted { color: var(--muted); }
+.data-line { display: block; margin-top: 0.35rem; font-size: 0.8rem; color: var(--muted); }
 
 .stats {
   display: flex;

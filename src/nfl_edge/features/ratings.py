@@ -47,12 +47,16 @@ def rolling_team_ratings(
     team_games: pl.DataFrame,
     *,
     window: int = 8,
-    min_periods: int = 3,
+    min_samples: int = 3,
 ) -> pl.DataFrame:
     """
-    Prior-to-game rolling offensive/defensive strength.
+    Rolling offensive/defensive strength per team-game.
     offense = avg points scored; defense = avg points allowed (lower better).
     Also computes EMA-style recent form (last 3 margins).
+
+    `off_rating`/`def_rating`/`form_ema` are as of kickoff of that row's game
+    (no leakage). `post_*` columns include that game's result: they are the
+    rating a team carries into its *next* game.
     """
     df = team_games.sort(["team", "season", "week"])
 
@@ -63,31 +67,30 @@ def rolling_team_ratings(
         prior_margin=pl.col("margin").shift(1).over("team"),
     )
 
-    df = df.with_columns(
-        off_rating=pl.col("prior_pf")
-        .rolling_mean(window_size=window, min_samples=min_periods)
-        .over("team"),
-        def_rating=pl.col("prior_pa")
-        .rolling_mean(window_size=window, min_samples=min_periods)
-        .over("team"),
-        form_ema=pl.col("prior_margin")
-        .rolling_mean(window_size=3, min_samples=1)
-        .over("team"),
+    def _ratings(pf: str, pa: str, margin: str, prefix: str) -> list[pl.Expr]:
+        by_season = ["team", "season"]
+        return [
+            pl.coalesce(
+                pl.col(pf).rolling_mean(window_size=window, min_samples=min_samples).over("team"),
+                pl.col(pf).cum_sum().over(by_season) / pl.col(pf).cum_count().over(by_season),
+                pl.lit(22.0),
+            ).alias(f"{prefix}off_rating"),
+            pl.coalesce(
+                pl.col(pa).rolling_mean(window_size=window, min_samples=min_samples).over("team"),
+                pl.col(pa).cum_sum().over(by_season) / pl.col(pa).cum_count().over(by_season),
+                pl.lit(22.0),
+            ).alias(f"{prefix}def_rating"),
+            pl.coalesce(
+                pl.col(margin).rolling_mean(window_size=3, min_samples=1).over("team"),
+                pl.lit(0.0),
+            ).alias(f"{prefix}form_ema"),
+        ]
+
+    return df.with_columns(
+        *_ratings("prior_pf", "prior_pa", "prior_margin", ""),
+        *_ratings("points_for", "points_against", "margin", "post_"),
         games_played=pl.col("prior_pf").cum_count().over("team"),
     )
-
-    # season-to-date means as fallback early in season
-    df = df.with_columns(
-        season_off=(pl.col("prior_pf").cum_sum().over(["team", "season"]) / pl.col("prior_pf").cum_count().over(["team", "season"])),
-        season_def=(pl.col("prior_pa").cum_sum().over(["team", "season"]) / pl.col("prior_pa").cum_count().over(["team", "season"])),
-    )
-
-    df = df.with_columns(
-        off_rating=pl.coalesce([pl.col("off_rating"), pl.col("season_off"), pl.lit(22.0)]),
-        def_rating=pl.coalesce([pl.col("def_rating"), pl.col("season_def"), pl.lit(22.0)]),
-        form_ema=pl.coalesce([pl.col("form_ema"), pl.lit(0.0)]),
-    )
-    return df
 
 
 def attach_pass_rush_splits(team_games: pl.DataFrame, team_stats: pl.DataFrame) -> pl.DataFrame:
@@ -132,11 +135,12 @@ def attach_pass_rush_splits(team_games: pl.DataFrame, team_stats: pl.DataFrame) 
     for col in ["pass_yards", "rush_yards", "pass_epa", "rush_epa"]:
         if col in stats.columns:
             stats = stats.with_columns(
-                pl.col(col).shift(1).rolling_mean(window_size=6, min_samples=2).over("team").alias(f"roll_{col}")
+                pl.col(col).shift(1).rolling_mean(window_size=6, min_samples=2).over("team").alias(f"roll_{col}"),
+                pl.col(col).rolling_mean(window_size=6, min_samples=2).over("team").alias(f"post_roll_{col}"),
             )
 
     join_cols = ["season", "week", "team"]
-    keep = [c for c in stats.columns if c.startswith("roll_") or c in join_cols]
+    keep = [c for c in stats.columns if c.startswith(("roll_", "post_roll_")) or c in join_cols]
     stats = stats.select(keep)
     return team_games.join(stats, on=join_cols, how="left")
 

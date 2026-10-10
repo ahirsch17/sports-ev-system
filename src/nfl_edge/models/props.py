@@ -66,25 +66,22 @@ def rolling_player_yards(player_stats: pl.DataFrame, *, window: int = 5) -> pl.D
             df = df.with_columns(pl.lit(0.0).alias(col))
 
     df = df.sort(["player_name", "season", "week"])
-    df = df.with_columns(
-        roll_pass=pl.col("passing_yards").shift(1).rolling_mean(window_size=window, min_samples=2).over("player_name"),
-        roll_rush=pl.col("rushing_yards").shift(1).rolling_mean(window_size=window, min_samples=2).over("player_name"),
-        roll_recv=pl.col("receiving_yards").shift(1).rolling_mean(window_size=window, min_samples=2).over("player_name"),
-        roll_pass_std=pl.col("passing_yards").shift(1).rolling_std(window_size=window, min_samples=3).over("player_name"),
-        roll_rush_std=pl.col("rushing_yards").shift(1).rolling_std(window_size=window, min_samples=3).over("player_name"),
-        roll_recv_std=pl.col("receiving_yards").shift(1).rolling_std(window_size=window, min_samples=3).over("player_name"),
-    )
-    keep = [
-        "season",
-        "week",
-        "team",
-        "player_name",
-        "roll_pass",
-        "roll_rush",
-        "roll_recv",
-        "roll_pass_std",
-        "roll_rush_std",
-        "roll_recv_std",
+
+    def _rolls(lag: int, prefix: str) -> list[pl.Expr]:
+        exprs = []
+        for src, name in (("passing_yards", "pass"), ("rushing_yards", "rush"), ("receiving_yards", "recv")):
+            col = pl.col(src).shift(lag) if lag else pl.col(src)
+            exprs.append(col.rolling_mean(window_size=window, min_samples=2).over("player_name").alias(f"{prefix}roll_{name}"))
+            exprs.append(col.rolling_std(window_size=window, min_samples=3).over("player_name").alias(f"{prefix}roll_{name}_std"))
+        return exprs
+
+    # roll_* = before that row's game; post_roll_* = including it (used when projecting the next game)
+    df = df.with_columns(*_rolls(1, ""), *_rolls(0, "post_"))
+    keep = ["season", "week", "team", "player_name"] + [
+        f"{prefix}roll_{name}{suffix}"
+        for prefix in ("", "post_")
+        for name in ("pass", "rush", "recv")
+        for suffix in ("", "_std")
     ]
     if "position" in df.columns:
         keep.append("position")
@@ -196,6 +193,9 @@ def project_props_for_game(
         if week_df.is_empty():
             return []
         week_df = week_df.sort(["season", "week"]).group_by(["team", "player_name"]).tail(1)
+        week_df = week_df.with_columns(
+            [pl.col(c).alias(c.removeprefix("post_")) for c in week_df.columns if c.startswith("post_roll_")]
+        )
 
     props: list[dict] = []
     for team, team_pass_pred, team_rush_pred in [
@@ -203,6 +203,8 @@ def project_props_for_game(
         (away, float(game_row.get("pred_away_pass_yds") or 230), float(game_row.get("pred_away_rush_yds") or 115)),
     ]:
         tdf = week_df.filter(pl.col("team") == team)
+        if out_l:
+            tdf = tdf.filter(~pl.col("player_name").str.to_lowercase().is_in(list(out_l)))
         if tdf.is_empty():
             continue
 
@@ -394,10 +396,24 @@ def project_props_for_game(
     return props
 
 
+def _ruled_out(injuries: pl.DataFrame | None, season: int, week: int) -> set[str]:
+    """Lower-cased names listed Out/Doubtful on that week's official injury report."""
+    need = {"season", "week", "full_name", "report_status"}
+    if injuries is None or injuries.is_empty() or not need.issubset(injuries.columns):
+        return set()
+    rows = injuries.filter(
+        (pl.col("season") == season)
+        & (pl.col("week") == week)
+        & pl.col("report_status").is_in(["Out", "Doubtful"])
+    )
+    return {str(n).lower() for n in rows["full_name"].to_list() if n}
+
+
 def project_slate_props(
     predictions: pl.DataFrame,
     player_stats: pl.DataFrame,
     depth_charts: pl.DataFrame | None = None,
+    injuries: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
     from nfl_edge.features.injuries import normalize_depth_charts
 
@@ -405,8 +421,9 @@ def project_slate_props(
     dc = normalize_depth_charts(depth_charts) if depth_charts is not None and not depth_charts.is_empty() else None
     all_props: list[dict] = []
     for r in predictions.iter_rows(named=True):
+        out = _ruled_out(injuries, int(r["season"]), int(r["week"]))
         all_props.extend(
-            project_props_for_game(game_row=r, player_rolls=rolls, depth_charts=dc)
+            project_props_for_game(game_row=r, player_rolls=rolls, depth_charts=dc, out_players=out)
         )
     if not all_props:
         return pl.DataFrame()

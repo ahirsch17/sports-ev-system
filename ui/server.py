@@ -70,7 +70,35 @@ def api_nfl(week: int | None = None, season: int | None = None):
         "edges": advice["best_singles"],
         "parlays": advice["best_parlays"],
         "advice": advice,
+        "data": slate.get("data") or {},
     }
+
+
+@app.post("/api/refresh")
+def api_refresh(sport: str = "NFL"):
+    """Re-download live data (scores, injuries, depth charts, stats, odds); the next load recalculates."""
+    sport = sport.upper()
+    if sport == "NFL":
+        from nfl_edge.ingest.nflverse import refresh_current
+        from nfl_edge.ingest.odds import load_live_events
+
+        report = refresh_current()
+        events, meta = load_live_events(force=True)
+        report["odds"] = {
+            "events": len(events),
+            "fetched_at": meta.get("fetched_at"),
+            "cached": bool(meta.get("cached")),
+            "requests_remaining": meta.get("requests_remaining"),
+            "error": meta.get("error"),
+        }
+        return {"sport": sport, **report}
+    if sport == "MLB":
+        from mlb_edge.ingest import refresh_live
+    elif sport == "CFB":
+        from cfb_edge.ingest import refresh_live
+    else:
+        raise HTTPException(status_code=400, detail=f"Unknown sport '{sport}'")
+    return {"sport": sport, **refresh_live()}
 
 
 @app.get("/api/mlb")

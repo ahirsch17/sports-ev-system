@@ -19,18 +19,63 @@ console = Console()
 
 
 def _season_week(season: Optional[int], week: Optional[int]) -> tuple[int, int]:
-    season = season or current_nfl_season()
-    if week is None:
-        # infer next unfinished week from schedule
-        from nfl_edge.ingest.nflverse import load_schedules
+    """Explicit week, or the next week with games that haven't kicked off."""
+    from nfl_edge.services.slate import resolve_week
 
-        sched = load_schedules([season], regular_only=True)
-        unfinished = sched.filter(pl.col("home_score").is_null())
-        if unfinished.is_empty():
-            week = int(sched["week"].max())
-        else:
-            week = int(unfinished["week"].min())
-    return season, week
+    return resolve_week(season, week)
+
+
+@app.command("refresh")
+def refresh_cmd(
+    no_odds: bool = typer.Option(False, "--no-odds", help="Skip the DraftKings pull (saves Odds API quota)"),
+):
+    """Re-scrape this season (scores, injuries, depth charts, stats) + DK lines, then recalculate the board."""
+    ensure_dirs()
+    from nfl_edge.ingest.nflverse import refresh_current
+    from nfl_edge.services.slate import build_nfl_slate
+
+    console.print("Pulling latest nflverse data…")
+    report = refresh_current()
+    console.print(
+        f"[green]{report['final_games']} games final[/green] in {report['season']}"
+        + (f" ([cyan]{report['new_final_games']} new[/cyan])" if report["new_final_games"] else "")
+    )
+    for name, err in report["errors"].items():
+        console.print(f"[yellow]Could not refresh {name}:[/yellow] {err}")
+
+    slate = build_nfl_slate(force_odds=not no_odds)
+    data = slate.get("data") or {}
+    src = data.get("odds_source")
+    if src == "draftkings":
+        left = data.get("odds_requests_remaining")
+        console.print(
+            f"DraftKings lines for {data.get('dk_games')} games"
+            + (f" · {left} Odds API credits left" if left is not None else "")
+        )
+    else:
+        reason = data.get("odds_error") or "no DK lines for this week yet"
+        console.print(f"[cyan]Using nflverse consensus lines[/cyan] ({reason})")
+
+    edges = slate.get("edges") or []
+    console.print(
+        f"Recalculated {slate['season']} week {slate['week']}: "
+        f"{len(slate.get('games') or [])} upcoming games, "
+        f"{sum(1 for e in edges if e.get('passes_threshold'))} bets clear the EV bar"
+    )
+    table = Table(title="Top edges")
+    for col in ["matchup", "bet", "price", "fair", "model", "ev"]:
+        table.add_column(col)
+    for e in sorted(edges, key=lambda e: float(e.get("ev") or 0), reverse=True)[:12]:
+        table.add_row(
+            f"{e.get('away_team')} @ {e.get('home_team')}",
+            str(e.get("label")),
+            str(e.get("dk_price")),
+            str(e.get("fair_american")),
+            f"{float(e.get('model_prob') or 0):.1%}",
+            f"{float(e.get('ev') or 0):+.1%}",
+        )
+    console.print(table)
+    console.print(f"[dim]CSVs in {OUTPUT_DIR}[/dim]")
 
 
 @app.command("ingest")
@@ -120,7 +165,7 @@ def predict_cmd(
     injuries = load_injuries([season])
     depth = load_depth_charts([season])
     player_stats = load_player_stats(hist_seasons)
-    inj_feat = build_injury_features(week_sched, injuries, depth, weights)
+    inj_feat = build_injury_features(week_sched, injuries, depth, weights, player_stats=player_stats)
 
     from nfl_edge.features.deep_matchups import build_deep_matchup_features, build_team_style_table
     from nfl_edge.features.ratings import build_team_game_log
@@ -132,7 +177,7 @@ def predict_cmd(
         week_sched, team_stats, player_stats, depth, team_games, weights=weights
     )
     styles = build_team_style_table(team_stats) if not team_stats.is_empty() else None
-    sit = build_situational_features(week_sched, styles=styles, weights=weights)
+    sit = build_situational_features(week_sched, styles=styles, weights=weights, history=schedules_hist)
 
     # Ratings need full history; deep features attach to this week's game_ids only
     preds_all = predict_slate(
@@ -145,7 +190,7 @@ def predict_cmd(
     )
     preds_week = preds_all.filter((pl.col("season") == season) & (pl.col("week") == week))
 
-    props = project_slate_props(preds_week, player_stats, depth_charts=depth)
+    props = project_slate_props(preds_week, player_stats, depth_charts=depth, injuries=injuries)
 
     out = OUTPUT_DIR / f"week_{season}_{week}_predictions.csv"
     preds_week.write_csv(out)
@@ -200,62 +245,42 @@ def edges_cmd(
     fetch: bool = typer.Option(True, help="Fetch live DraftKings odds (needs ODDS_API_KEY)"),
     props: bool = typer.Option(False, help="Also fetch player props (uses more quota)"),
 ):
-    """Flag +EV bets vs DraftKings (or nflverse closing lines if no API key)."""
+    """Flag +EV bets vs DraftKings (or nflverse consensus lines if no API key)."""
     ensure_dirs()
     season, week = _season_week(season, week)
 
-    pred_path = OUTPUT_DIR / f"week_{season}_{week}_predictions.csv"
-    if not pred_path.exists():
-        console.print("No predictions found — running predict first…")
-        predict_cmd(week=week, season=season, backtest=False)
-
-    predictions = pl.read_csv(pred_path)
+    # Always re-predict so edges reflect the latest scores/injuries, not an old CSV.
+    predict_cmd(week=week, season=season, backtest=False)
+    predictions = pl.read_csv(OUTPUT_DIR / f"week_{season}_{week}_predictions.csv")
     prop_path = OUTPUT_DIR / f"week_{season}_{week}_props.csv"
     prop_proj = pl.read_csv(prop_path) if prop_path.exists() else pl.DataFrame()
 
-    from nfl_edge.edge.calculator import compute_main_edges, compute_prop_edges
-    from nfl_edge.ingest.odds import (
-        OddsAPIError,
-        fetch_event_odds,
-        fetch_player_props,
-        flatten_main_markets,
-        flatten_prop_markets,
-        load_cached_events,
-    )
+    from nfl_edge.edge.calculator import compute_main_edges, compute_prop_edges, normalize_team
     from nfl_edge.ingest.nflverse import load_schedules
-    from nfl_edge.ingest.schedule_odds import schedule_lines_as_odds
+    from nfl_edge.ingest.odds import OddsAPIError, fetch_player_props, flatten_prop_markets, load_live_events
+    from nfl_edge.services.slate import upcoming_games, market_lines
 
-    odds_rows: list = []
-    events = load_cached_events()
-    used_source = "cache"
-
-    if fetch:
-        try:
-            events = fetch_event_odds()
-            odds_rows = flatten_main_markets(events)
-            used_source = "draftkings"
-            console.print(f"Fetched {len(events)} DK events")
-        except OddsAPIError as e:
-            console.print(f"[yellow]Odds API unavailable:[/yellow] {e}")
-            events = events or []
-
-    if not odds_rows and events:
-        odds_rows = flatten_main_markets(events)
-        used_source = "cache"
-
-    if not odds_rows:
-        week_sched = load_schedules([season]).filter(pl.col("week") == week)
-        odds_rows = schedule_lines_as_odds(week_sched)
-        used_source = "nflverse_lines"
+    week_sched = upcoming_games(load_schedules([season]).filter(pl.col("week") == week))
+    odds_rows, info = market_lines(week_sched, force_odds=fetch)
+    used_source = info["odds_source"]
+    if used_source == "draftkings":
+        console.print(f"DraftKings lines for {info['dk_games']} games (pulled {info['odds_as_of']})")
+    else:
         console.print(
             f"[cyan]Using nflverse schedule lines as market proxy[/cyan] ({len(odds_rows)} rows). "
-            "Set ODDS_API_KEY for live DraftKings."
+            + (info.get("odds_error") or "Set ODDS_API_KEY for live DraftKings.")
         )
 
     main = compute_main_edges(predictions, odds_rows)
 
     prop_edges = pl.DataFrame()
-    if props and used_source == "draftkings" and events:
+    events = load_live_events()[0] if props and used_source == "draftkings" else []
+    # Each event's props cost ~5 API credits; only pull this week's games.
+    week_pairs = {(str(r["home_team"]), str(r["away_team"])) for r in week_sched.iter_rows(named=True)}
+    events = [
+        ev for ev in events if (normalize_team(str(ev.get("home_team"))), normalize_team(str(ev.get("away_team")))) in week_pairs
+    ]
+    if events:
         all_prop_odds = []
         try:
             for ev in events:

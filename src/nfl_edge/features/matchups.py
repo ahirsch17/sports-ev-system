@@ -15,7 +15,7 @@ from nfl_edge.features.weather import enrich_schedule_weather, form_weight_for_w
 
 
 def _rating_before_game(rated: pl.DataFrame, team: str, season: int, week: int) -> dict:
-    """Latest pre-game rating for team strictly before (season, week)."""
+    """Team rating going into (season, week): includes every game played before it."""
     prior = rated.filter(
         (pl.col("team") == team)
         & (
@@ -30,7 +30,9 @@ def _rating_before_game(rated: pl.DataFrame, team: str, season: int, week: int) 
         if same.is_empty():
             return {}
         return same.tail(1).to_dicts()[0]
-    return prior.sort(["season", "week"]).tail(1).to_dicts()[0]
+    last = prior.sort(["season", "week"]).tail(1).to_dicts()[0]
+    # The last row's plain ratings stop *before* that game; its post_* ratings include it.
+    return {**last, **{k.removeprefix("post_"): v for k, v in last.items() if k.startswith("post_")}}
 
 
 def build_matchup_frame(
@@ -72,6 +74,15 @@ def build_matchup_frame(
 
     if use_injuries and injury_features is not None and not injury_features.is_empty():
         games = games.join(injury_features, on="game_id", how="left")
+        if {"home_inj_points", "away_inj_points"}.issubset(games.columns):
+            # Injury points are always <= 0 and every roster carries some injuries, which the
+            # ratings already price in. Center on the week's league norm so only unusually
+            # banged-up teams move the projection (otherwise every total is shaded Under).
+            norm = ((pl.col("home_inj_points") + pl.col("away_inj_points")) / 2.0).mean().over(["season", "week"])
+            games = games.with_columns(
+                (pl.col("home_inj_points") - norm).alias("home_inj_points"),
+                (pl.col("away_inj_points") - norm).alias("away_inj_points"),
+            )
     if use_deep and deep_features is not None and not deep_features.is_empty():
         games = games.join(deep_features, on="game_id", how="left")
     if use_situational and situational_features is not None and not situational_features.is_empty():
@@ -132,9 +143,10 @@ def build_matchup_frame(
         away_form = float(away_r.get("form_ema") or 0.0)
 
         fw = form_weight_for_week(week, weights) if use_form else 0.0
-        # Points model
-        home_pts = (home_off + (league - away_def) + league) / 2.0
-        away_pts = (away_off + (league - home_def) + league) / 2.0
+        # Points model: what this offense scores, blended with what that defense allows
+        # (def_rating = points allowed, so a leaky defense raises the opponent's projection)
+        home_pts = (home_off + away_def) / 2.0
+        away_pts = (away_off + home_def) / 2.0
         home_pts += fw * home_form
         away_pts += fw * away_form
 

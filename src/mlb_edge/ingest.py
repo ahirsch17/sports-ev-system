@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from datetime import date, datetime, timedelta
 from typing import Any
@@ -45,6 +46,20 @@ def _live_ttl(end: date) -> float | None:
 def _season_ttl(season: int) -> float | None:
     """Season-to-date stats for the live season move daily; past seasons are final."""
     return 12.0 if season >= current_mlb_season() else None
+
+
+def refresh_live() -> dict:
+    """Drop caches that can still change (recent schedule ranges, this season's stats)."""
+    ensure_dirs()
+    season = current_mlb_season()
+    removed = 0
+    for path in CACHE_DIR.glob("*.json"):
+        m = re.fullmatch(r"sched_\d{4}-\d{2}-\d{2}_(\d{4}-\d{2}-\d{2})\.json", path.name)
+        live = (m and _live_ttl(date.fromisoformat(m.group(1))) is not None) or path.name.endswith(f"_{season}.json")
+        if live:
+            path.unlink(missing_ok=True)
+            removed += 1
+    return {"season": season, "cleared": removed}
 
 
 def _cache_write(name: str, data: Any) -> None:

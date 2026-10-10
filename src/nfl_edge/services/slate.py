@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 import polars as pl
@@ -14,25 +15,76 @@ from nfl_edge.features.ratings import build_team_game_log
 from nfl_edge.features.situational import build_situational_features
 from nfl_edge.features.weather import load_weights
 from nfl_edge.ingest.nflverse import (
+    data_as_of,
     load_depth_charts,
     load_injuries,
     load_player_stats,
     load_schedules,
     load_team_stats,
 )
+from nfl_edge.ingest.odds import flatten_main_markets, load_live_events
 from nfl_edge.ingest.schedule_odds import schedule_lines_as_odds
 from nfl_edge.models.game import predict_slate
 from nfl_edge.models.props import project_slate_props
-from nfl_edge.edge.calculator import build_parlays, compute_main_edges
+from nfl_edge.edge.calculator import build_parlays, compute_main_edges, normalize_team
 
 
 def resolve_week(season: int | None = None, week: int | None = None) -> tuple[int, int]:
     season = season or current_nfl_season()
     if week is None:
-        sched = load_schedules([season], regular_only=True)
-        unfinished = sched.filter(pl.col("home_score").is_null())
-        week = int(unfinished["week"].min()) if not unfinished.is_empty() else int(sched["week"].max())
+        sched = upcoming_games(load_schedules([season], regular_only=True))
+        week = int(sched["week"].min()) if not sched.is_empty() else int(load_schedules([season])["week"].max())
     return season, week
+
+
+def _kickoff_utc(gameday: Any, gametime: Any) -> datetime | None:
+    """nflverse lists kickoff as an Eastern date + HH:MM."""
+    try:
+        from zoneinfo import ZoneInfo
+
+        local = datetime.strptime(f"{gameday} {gametime or '13:00'}", "%Y-%m-%d %H:%M")
+        return local.replace(tzinfo=ZoneInfo("America/New_York")).astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def upcoming_games(sched: pl.DataFrame) -> pl.DataFrame:
+    """Games with no final score that haven't started yet (in-progress games can't be bet pregame)."""
+    pending = sched.filter(pl.col("home_score").is_null())
+    if pending.is_empty() or "gameday" not in pending.columns:
+        return pending
+    now = datetime.now(timezone.utc)
+    keep = []
+    for r in pending.iter_rows(named=True):
+        kick = _kickoff_utc(r.get("gameday"), r.get("gametime"))
+        keep.append(kick is None or kick > now)
+    return pending.filter(pl.Series(keep))
+
+
+def market_lines(week_sched: pl.DataFrame, *, force_odds: bool = False) -> tuple[list[dict], dict[str, Any]]:
+    """
+    Live DraftKings lines (The Odds API) where available, nflverse schedule lines
+    for any game DraftKings hasn't posted — or for everything when there's no key.
+    """
+    sched_rows = schedule_lines_as_odds(week_sched)
+    events, meta = load_live_events(force=force_odds)
+    dk_rows = flatten_main_markets(events) if events else []
+    covered = {(normalize_team(str(r["home_team"])), normalize_team(str(r["away_team"]))) for r in dk_rows}
+    week_pairs = {(str(r["home_team"]), str(r["away_team"])) for r in week_sched.iter_rows(named=True)}
+    dk_games = len(covered & week_pairs)
+    fallback = [
+        r
+        for r in sched_rows
+        if (normalize_team(str(r["home_team"])), normalize_team(str(r["away_team"]))) not in covered
+    ]
+    info = {
+        "odds_source": "draftkings" if dk_games else "nflverse_lines",
+        "dk_games": dk_games,
+        "odds_as_of": meta.get("fetched_at") if dk_games else None,
+        "odds_requests_remaining": meta.get("requests_remaining"),
+        "odds_error": meta.get("error"),
+    }
+    return dk_rows + fallback, info
 
 
 def _balanced_game_props(props: list[dict], *, limit: int = 10) -> list[dict]:
@@ -93,6 +145,7 @@ class WeekModel:
     sit: pl.DataFrame
     player_stats: pl.DataFrame
     depth: pl.DataFrame
+    injuries: pl.DataFrame | None = None
 
 
 def model_week(
@@ -110,7 +163,7 @@ def model_week(
         schedules_hist = load_schedules(hist_seasons)
     week_sched = schedules_hist.filter((pl.col("season") == season) & (pl.col("week") == week))
     if upcoming_only:
-        week_sched = week_sched.filter(pl.col("home_score").is_null())
+        week_sched = upcoming_games(week_sched)
     if week_sched.is_empty():
         return None
 
@@ -153,31 +206,39 @@ def model_week(
         sit=sit,
         player_stats=player_stats,
         depth=depth,
+        injuries=injuries,
     )
 
 
-def build_nfl_slate(season: int | None = None, week: int | None = None) -> dict[str, Any]:
+def build_nfl_slate(
+    season: int | None = None, week: int | None = None, *, force_odds: bool = False
+) -> dict[str, Any]:
     """Return predictions, deep matchups, props, edges, parlays for a week."""
     ensure_dirs()
     season, week = resolve_week(season, week)
     weights = load_weights()
     hist_seasons = list(range(max(2006, season - 3), season + 1))
     schedules_hist = load_schedules(hist_seasons)
+    data_info: dict[str, Any] = {"nflverse_as_of": data_as_of(season)}
 
-    # Betting board = remaining games only (TNF/MNF already final stay off the board)
+    # Betting board = games that haven't kicked off (finished or in-progress games stay off)
     wm = model_week(season, week, weights=weights, schedules_hist=schedules_hist)
     if wm is None:
         # whole week done - advance to next unfinished week
         season, week = resolve_week(season, None)
         wm = model_week(season, week, weights=weights)
         if wm is None:
-            return {"season": season, "week": week, "games": [], "edges": [], "parlays": [], "props": []}
+            return {
+                "season": season, "week": week, "games": [], "edges": [], "parlays": [], "props": [],
+                "data": data_info,
+            }
 
     week_sched, preds = wm.week_sched, wm.preds
     inj_feat, deep, sit = wm.inj_feat, wm.deep, wm.sit
-    props = project_slate_props(preds, wm.player_stats, depth_charts=wm.depth)
+    props = project_slate_props(preds, wm.player_stats, depth_charts=wm.depth, injuries=wm.injuries)
 
-    odds_rows = schedule_lines_as_odds(week_sched)
+    odds_rows, odds_info = market_lines(week_sched, force_odds=force_odds)
+    data_info.update(odds_info)
     edges = compute_main_edges(preds, odds_rows, weights)
     parlays = build_parlays(edges) if not edges.is_empty() else []
 
@@ -242,6 +303,7 @@ def build_nfl_slate(season: int | None = None, week: int | None = None) -> dict[
         "edges": edges.to_dicts() if not edges.is_empty() else [],
         "parlays": parlays,
         "weights": weights,
+        "data": data_info,
     }
 
 

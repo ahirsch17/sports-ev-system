@@ -52,6 +52,18 @@ def _season_ttl(season: int) -> float | None:
     return LIVE_CACHE_TTL_HOURS if season >= current_cfb_season() else None
 
 
+def refresh_live() -> dict:
+    """Drop the current season's schedule cache so scores re-download."""
+    season = current_cfb_season()
+    removed = 0
+    for name in (f"cfbfastr_sched_{season}.csv", f"cfbd_sched_{season}.json"):
+        path = _cache_path(name)
+        if path.exists():
+            path.unlink()
+            removed += 1
+    return {"season": season, "cleared": removed}
+
+
 def _cache_write_bytes(name: str, data: bytes) -> None:
     _cache_path(name).write_bytes(data)
 

@@ -22,6 +22,13 @@ START_SEASON = int(os.getenv("NFL_EDGE_START_SEASON", "2006"))
 ODDS_API_KEY = os.getenv("ODDS_API_KEY", "")
 ODDS_BOOK = os.getenv("ODDS_BOOK", "draftkings")
 
+# Current-season data (scores, injuries, depth charts, stats) is re-downloaded once
+# its cache is older than this. Completed seasons never change, so they stay cached.
+LIVE_TTL_SECONDS = int(float(os.getenv("SPORTS_EDGE_LIVE_TTL_MIN", "60")) * 60)
+# The Odds API free tier is ~500 credits/month and one main-market pull costs 3.
+ODDS_TTL_SECONDS = int(float(os.getenv("ODDS_TTL_MIN", "240")) * 60)
+ODDS_MIN_REFETCH_SECONDS = int(float(os.getenv("ODDS_MIN_REFETCH_MIN", "10")) * 60)
+
 
 def current_nfl_season(today: date | None = None) -> int:
     """NFL season year: Sep–Dec = that year; Jan–Feb = previous calendar year."""

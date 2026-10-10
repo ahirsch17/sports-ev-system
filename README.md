@@ -49,6 +49,7 @@ scripts/launch-dashboard.sh          # Streamlit control room (Windows: scripts\
 sports-edge ui                       # NFL / MLB / CFB board at http://127.0.0.1:8510
 
 # Model views
+sports-edge refresh                  # re-pull this season's scores, injuries, depth charts + DK, then recalc
 sports-edge predict --week 6         # NFL spreads, totals, team yards
 sports-edge edges --week 6 --props   # model vs DK (needs ODDS_API_KEY; else schedule lines)
 sports-edge mlb --days 2
@@ -58,6 +59,13 @@ sports-edge cfb
 Scheduled refresh: `scripts/install-scheduled-task.ps1` on Windows, or cron on macOS/Linux
 (see the header of `scripts/scheduled-refresh.sh`). Both run every 4 hours and log to
 `logs/scheduled-refresh.log`.
+
+The board's **Refresh** button does the same as `sports-edge refresh` for the active sport.
+Past seasons are cached once; the current season re-downloads after `SPORTS_EDGE_LIVE_TTL_MIN`
+(default 60). DraftKings pulls are reused for `ODDS_TTL_MIN` (default 240) to stay inside the
+Odds API free tier. Games that have kicked off drop off the board, and moneyline EV is priced
+from a blend of the model and the no-vig market (`market_blend.model_weight`), because the
+closing market is the better forecaster on its own.
 
 ## Research and what the numbers say
 

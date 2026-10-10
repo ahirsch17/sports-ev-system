@@ -98,9 +98,8 @@ def normalize_depth_charts(depth_charts: pl.DataFrame) -> pl.DataFrame:
 
     # Modern snapshot format (no season/week) — take latest dt per team-player-pos
     if "dt" in cols and "season" not in cols:
-        df = df.sort("dt")
-        latest = df.select(pl.col("dt").max()).item()
-        df = df.filter(pl.col("dt") == latest)
+        # newest snapshot per team, so one partial scrape can't drop other teams
+        df = df.sort("dt").filter(pl.col("dt") == pl.col("dt").max().over("team"))
         rename = {}
         if "pos_abb" in cols:
             rename["pos_abb"] = "position"

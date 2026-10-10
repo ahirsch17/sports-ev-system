@@ -71,7 +71,7 @@ DEFAULT_WEIGHTS = {
         "pace_clamp": 1.0,
     },
     "margin_sigma": 13.5,
-    "total_sigma": 10.0,
+    "total_sigma": 13.0,
     "notes": "Seed weights from literature; overwritten by `nfl-edge research`.",
 }
 
