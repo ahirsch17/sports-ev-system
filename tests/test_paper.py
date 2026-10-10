@@ -178,6 +178,47 @@ class TestSettlement:
         assert bet.clv == pytest.approx(0.0)
         assert bet.settled_at is not None
 
+    def test_away_spread_uses_own_line_for_outcome_and_clv(self, session: Session):
+        kickoff = datetime(2026, 9, 10, 17, 0, tzinfo=timezone.utc)
+        _seed_settled_game(session, game_id="g1", kickoff=kickoff)  # home 24, away 17, close home -3.5
+        session.add(
+            PaperBet(
+                game_id="g1",
+                book="draftkings",
+                market_type="spread",
+                side="away",
+                flagged_at=kickoff - timedelta(hours=3),
+                suggested_stake_pct=1.0,
+                odds_taken=-110,
+                line_taken=4.5,
+                model_version="manual_v1",
+                edge_pct=3.0,
+                audit_trail={},
+                outcome="pending",
+            )
+        )
+        session.commit()
+
+        PaperBetSettlementService(session).settle_pending()
+        bet = session.query(PaperBet).one()
+        assert bet.outcome == "loss"
+        assert bet.closing_line == pytest.approx(3.5)
+        assert bet.clv == pytest.approx(1.0)
+
+    def test_flagged_away_spread_stores_away_line(self, session: Session):
+        kickoff = datetime.now(timezone.utc) + timedelta(days=2)
+        _seed_upcoming_game(session, game_id="upcoming_1", kickoff=kickoff)
+        dk = session.query(OddsSnapshot).filter_by(book="draftkings").one()
+        dk.odds_home, dk.odds_away = -180, 150
+        session.commit()
+
+        OpportunityFlagger(session, Settings(min_edge_pct=2.0)).flag_upcoming(
+            days_ahead=7, strategy="market", soft_book="draftkings"
+        )
+        bet = session.query(PaperBet).one()
+        assert bet.side == "away"
+        assert bet.line_taken == pytest.approx(3.5)
+
     def test_leaves_unsettled_games_pending(self, session: Session):
         kickoff = datetime.now(timezone.utc) + timedelta(days=3)
         _seed_upcoming_game(session, game_id="g1", kickoff=kickoff)

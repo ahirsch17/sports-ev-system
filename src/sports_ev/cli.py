@@ -65,14 +65,20 @@ def main(argv: list[str] | None = None) -> int:
     bt_cmd.add_argument("--stake", type=float, default=1.0, help="Flat stake per bet")
     bt_cmd.add_argument(
         "--strategy",
-        choices=["market", "model", "walk-forward-model"],
+        choices=["market", "model", "walk-forward-model", "nfl-edge"],
         default="market",
-        help="Backtest strategy to use",
+        help="Backtest strategy to use (nfl-edge = formula model blended with Pinnacle)",
     )
     bt_cmd.add_argument(
         "--model-path",
         default=None,
         help="Path to trained model artifact (required for --strategy model)",
+    )
+    bt_cmd.add_argument(
+        "--model-weight",
+        type=float,
+        default=None,
+        help="nfl-edge blend weight on the model margin (default: research/factor_weights.json)",
     )
     bt_cmd.set_defaults(func=_run_backtest)
 
@@ -98,11 +104,17 @@ def main(argv: list[str] | None = None) -> int:
     flag_cmd.add_argument("--book", default="draftkings", help="Soft book to evaluate")
     flag_cmd.add_argument(
         "--strategy",
-        choices=["market", "model"],
+        choices=["market", "model", "nfl-edge"],
         default="market",
-        help="Opportunity detection strategy",
+        help="Opportunity detection strategy (nfl-edge = formula model blended with Pinnacle)",
     )
     flag_cmd.add_argument("--model-path", default=None, help="Model artifact for --strategy model")
+    flag_cmd.add_argument(
+        "--model-weight",
+        type=float,
+        default=None,
+        help="nfl-edge blend weight on the model margin (default: research/factor_weights.json)",
+    )
     flag_cmd.set_defaults(func=_flag_opportunities)
 
     settle_cmd = sub.add_parser("settle-paper-bets", help="Backfill outcomes and CLV for settled games")
@@ -318,6 +330,13 @@ def _run_backtest(args: argparse.Namespace) -> int:
 
     if args.strategy == "market":
         strategy = MarketDivergenceStrategy(soft_book=args.book, market_type=market_type)
+    elif args.strategy == "nfl-edge":
+        if args.sport != "nfl":
+            print("--strategy nfl-edge supports --sport nfl only")
+            return 2
+        from sports_ev.models.nfl_edge_strategy import build_nfl_edge_strategy
+
+        strategy = build_nfl_edge_strategy(soft_book=args.book, model_weight=args.model_weight)
     elif args.strategy == "model":
         if args.sport == "mlb":
             from sports_ev.models.mlb_artifact import MlbMoneylineModel
@@ -555,6 +574,7 @@ def _flag_opportunities(args: argparse.Namespace) -> int:
             strategy=args.strategy,
             soft_book=args.book,
             model_path=args.model_path,
+            model_weight=args.model_weight,
         )
 
     print(

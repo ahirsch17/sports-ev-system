@@ -23,6 +23,14 @@ class TestTeamMatching:
     def test_teams_match_substring(self):
         assert teams_match("Kansas City Chiefs", "KC Chiefs") is True
         assert teams_match("Baltimore Ravens", "Ravens") is True
+        assert teams_match("Los Angeles Rams", "LA Rams") is True
+        assert teams_match("Boston Red Sox", "BOS Red Sox") is True
+
+    def test_shared_city_or_suffix_does_not_collide(self):
+        assert teams_match("New York Yankees", "New York Mets") is False
+        assert teams_match("Boston Red Sox", "Chicago White Sox") is False
+        assert teams_match("Los Angeles Rams", "Los Angeles Chargers") is False
+        assert teams_match("New York Giants", "NY Jets") is False
 
     def test_normalize_team(self):
         assert normalize_team("The Kansas City Chiefs") == "kansas city chiefs"

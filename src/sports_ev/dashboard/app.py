@@ -440,11 +440,17 @@ def _render_sidebar(
     with st.sidebar.expander("Settings", expanded=False):
         days = st.slider("Days ahead", 1, 14, 3, help=DAYS_AHEAD_HELP)
         default_strategy_index = 1
+        strategy_options = ["market", "model"] + (["nfl-edge"] if config.sport == "nfl" else [])
+        strategy_labels = {
+            "market": "Sharp vs soft",
+            "model": "ML model",
+            "nfl-edge": "NFL Edge + Pinnacle blend",
+        }
         strategy = st.selectbox(
             "Auto-flag strategy",
-            ["market", "model"],
+            strategy_options,
             index=default_strategy_index,
-            format_func=lambda s: "ML model" if s == "model" else "Sharp vs soft",
+            format_func=lambda s: strategy_labels.get(s, s),
             help=STRATEGY_HELP,
         )
         soft_book = st.selectbox(

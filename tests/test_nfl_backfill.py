@@ -22,7 +22,18 @@ def session():
 
 def test_home_spread_line_convention():
     assert _home_spread_line("3") == -3.0
-    assert _home_spread_line("-3") == -3.0
+    assert _home_spread_line("-3") == 3.0
+    assert _home_spread_line("0") == 0.0
+    assert _home_spread_line("") is None
+
+
+def test_kickoff_is_eastern_converted_to_utc():
+    from sports_ev.stats.nfl_backfill import _parse_kickoff
+
+    kickoff = _parse_kickoff({"gameday": "2024-09-05", "gametime": "20:20"})
+    assert kickoff.tzinfo is not None
+    assert (kickoff.hour, kickoff.minute) == (0, 20)
+    assert kickoff.day == 6
 
 
 def test_backfill_seasons_upserts_game(session):

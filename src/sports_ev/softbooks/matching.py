@@ -20,18 +20,28 @@ def normalize_team(name: str) -> str:
     return text
 
 
+_TWO_WORD_NICKNAMES = {"red sox", "white sox", "blue jays", "golden knights", "maple leafs", "trail blazers"}
+
+
+def team_nickname(name: str) -> str:
+    """Nickname is the distinguishing part ("Chiefs" in "KC Chiefs"); cities are shared."""
+    tokens = normalize_team(name).split()
+    if not tokens:
+        return ""
+    if len(tokens) >= 2 and " ".join(tokens[-2:]) in _TWO_WORD_NICKNAMES:
+        return " ".join(tokens[-2:])
+    return tokens[-1]
+
+
 def teams_match(stored: str, scraped: str) -> bool:
+    """Match on nickname so shared cities ("New York", "Los Angeles") never collide."""
     a = normalize_team(stored)
     b = normalize_team(scraped)
     if not a or not b:
         return False
     if a == b:
         return True
-    if a in b or b in a:
-        return True
-    a_tokens = set(a.split())
-    b_tokens = set(b.split())
-    return bool(a_tokens & b_tokens)
+    return team_nickname(a) == team_nickname(b)
 
 
 def find_game_for_matchup(

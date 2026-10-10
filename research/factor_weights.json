@@ -1,0 +1,127 @@
+{
+  "hfa_points": {
+    "2020": 0.14,
+    "pre_2016": 2.38,
+    "2016_2019": 1.85,
+    "2021_plus": 2.02
+  },
+  "weather": {
+    "wind_pass_yards_pct_per_10mph": -0.068,
+    "wind_total_points_per_10mph": -2.89,
+    "wind_high_threshold_mph": 20,
+    "wind_high_total_extra": 1.48,
+    "rain_pass_yards_pct": -0.12,
+    "rain_total_points": -2.0,
+    "dome_total_boost": 1.84
+  },
+  "momentum": {
+    "form_weight_early": 0.203,
+    "form_weight_mid": 0.233,
+    "form_weight_late": 0.244,
+    "early_weeks": 4,
+    "late_week_start": 15,
+    "empirical_corr": {
+      "early": 0.1695,
+      "mid": 0.194,
+      "late": 0.203
+    }
+  },
+  "injuries": {
+    "qb1_out_points": -5.0,
+    "qb2_out_points": -1.5,
+    "wr1_out_points": -1.2,
+    "rb1_out_points": -0.8,
+    "ol_starter_out_points": -0.6,
+    "cb1_out_vs_pass": 1.0,
+    "inactive_depth_gt_2": 0.0
+  },
+  "props": {
+    "pass_min_edge_vs_roll": 20.0,
+    "rush_min_edge_vs_roll": 12.0,
+    "recv_min_edge_vs_roll": 15.0,
+    "pass_notes": "Audit 2023-25: conf pass edge hit ~69% when |mu-roll|>=20",
+    "rush_notes": "Rush shrunk toward roll after audit overprediction",
+    "recv_notes": "Receiving yards added; noisier than pass. Prefer pass first.",
+    "halves": "SKIP. No 1H/2H model."
+  },
+  "edge_thresholds": {
+    "props_min_ev": 0.03,
+    "totals_min_ev": 0.04,
+    "spreads_min_ev": 0.05,
+    "h2h_min_ev": 0.05
+  },
+  "deep_matchup": {
+    "weight": 0.3,
+    "top_k_similar": 8,
+    "max_style_distance": 1.35,
+    "qb1_continuity_weight": 0.4,
+    "sim_scale": 0.55,
+    "mismatch_scale": 0.4,
+    "sim_margin_scale": 0.16,
+    "notes": "Raised similar-opponent weight vs prior 0.35*0.35 underuse; rematch/continuity boosted"
+  },
+  "situational": {
+    "weight": 0.45,
+    "rest_pts_per_day": 0.15,
+    "short_week_days": 5,
+    "short_week_pts": 0.6,
+    "thursday_hfa_dampen": 0.25,
+    "rest_clamp": 2.0,
+    "division_hfa_dampen": 0.2,
+    "division_clamp": 0.5,
+    "pace_pass_scale": 0.7,
+    "pace_rush_scale": 0.4,
+    "pace_clamp": 1.0,
+    "near_miss_pts": 2.0,
+    "near_miss_max_loss": 7.0,
+    "notes": "Shrunk after 2022-2025 ablation: situational alone slightly hurt accuracy; mild rest/div/pace in full model lifted to 63.94% / gated 71.4%. Near-miss close-loss credit added."
+  },
+  "margin_sigma": 13.5,
+  "total_sigma": 10.0,
+  "notes": "Weights fit from nflverse regular-season history. HFA is mean home margin by era. Weather totals from outdoor wind splits. Momentum weights from form to margin correlation by season phase. Situational rest/division/pace added then shrunk after 2022-2025 ablation (alone hurt; mild in full model helps). See output/audit_factor_ablation.json. | iterate_confidence 2022-2025 gate=7.0 gated={'n': 218, 'winner_accuracy': 0.7385}.",
+  "research_meta": {
+    "seasons": "2006-2026",
+    "n_reg_games": 5232,
+    "weather_empirical": {
+      "outdoor_calm_total": 45.38,
+      "mid_wind_total": 42.49,
+      "high_wind_total": 41.08,
+      "indoor_total": 47.22,
+      "n_outdoor": 3838,
+      "n_high_wind": 113
+    },
+    "preseason": {
+      "excluded": true,
+      "n": 0
+    }
+  },
+  "elo": {
+    "blend": 0.62,
+    "k": 20,
+    "hfa_elo": 48
+  },
+  "confidence": {
+    "min_abs_margin": 7.0,
+    "bet_margin": 5.0,
+    "skip_favorite_qb_out": true,
+    "chalk_ml_cap": 0.72,
+    "dog_qb_out_boost": true,
+    "notes": "Walk-forward 2022-2025 (n=1087): |margin|>=7 gated ~73.9% (n=218); |margin|>=5 ~72%; skip fav QB-out ~74%; dog QB-out slice ~83% (n~42, small). ATS ~50% so prefer ML winners over spreads. Elo blend 0.62, deep 0.30, sit 0.45."
+  },
+  "market_blend": {
+    "model_weight": 0.15,
+    "seasons": [
+      2019,
+      2020,
+      2021,
+      2022,
+      2023,
+      2024,
+      2025
+    ],
+    "n": 1871,
+    "ats_logloss": 0.69268,
+    "ats_logloss_market_only": 0.69315,
+    "notes": "Blend of nfl_edge margin with closing-market margin used by sports_ev NflEdgeSpreadStrategy."
+  }
+}

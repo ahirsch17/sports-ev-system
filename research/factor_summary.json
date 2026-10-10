@@ -1,0 +1,16 @@
+{
+  "seasons": "2006-2026",
+  "n_reg_games": 5232,
+  "weather_empirical": {
+    "outdoor_calm_total": 45.38,
+    "mid_wind_total": 42.49,
+    "high_wind_total": 41.08,
+    "indoor_total": 47.22,
+    "n_outdoor": 3838,
+    "n_high_wind": 113
+  },
+  "preseason": {
+    "excluded": true,
+    "n": 0
+  }
+}

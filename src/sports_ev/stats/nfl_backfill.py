@@ -3,7 +3,8 @@ from __future__ import annotations
 import csv
 import io
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import httpx
 from sqlalchemy.orm import Session
@@ -13,7 +14,8 @@ from sports_ev.db.models import Game, OddsSnapshot, TeamGameStat
 GAMES_CSV = "https://github.com/nflverse/nflverse-data/releases/download/schedules/games.csv"
 TEAMS_CSV = "https://github.com/nflverse/nflverse-data/releases/download/teams/teams_colors_logos.csv"
 WEEK_STATS_URL = "https://github.com/nflverse/nflverse-data/releases/download/stats_team/stats_team_week_{season}.csv"
-PARSER_VERSION = "nflverse@1.0"
+PARSER_VERSION = "nflverse@1.1"
+_EASTERN = ZoneInfo("America/New_York")
 
 
 @dataclass
@@ -45,16 +47,21 @@ def _parse_kickoff(row: dict[str, str]) -> datetime:
     gametime = (row.get("gametime") or "13:00").strip()
     if not gameday:
         raise ValueError("missing gameday")
-    dt = datetime.fromisoformat(f"{gameday}T{gametime}")
-    return dt.replace(tzinfo=timezone.utc)
+    # nflverse gameday/gametime are US Eastern local time.
+    dt = datetime.fromisoformat(f"{gameday}T{gametime}").replace(tzinfo=_EASTERN)
+    return dt.astimezone(timezone.utc)
 
 
 def _home_spread_line(raw: str | None) -> float | None:
+    """nflverse spread_line is the expected home margin (positive = home favored).
+
+    The home betting line is its negation: home -3 when spread_line is 3,
+    home +3 when the away team is a 3-point favorite.
+    """
     if raw in (None, ""):
         return None
     spread = float(raw)
-    # nflverse: positive spread_line => home favored => home gives points.
-    return -abs(spread) if spread > 0 else spread
+    return -spread if spread else 0.0
 
 
 def _game_key(nflverse_game_id: str) -> str:
@@ -114,7 +121,8 @@ class NflHistoryBackfillService:
                 game.away_score = int(float(row["away_score"]))
 
                 if spread is not None:
-                    captured = kickoff.replace(hour=12, minute=0, second=0, microsecond=0)
+                    # nflverse spread_line is a closing number; stamp it just before kickoff.
+                    captured = kickoff - timedelta(hours=1)
                     for book in ("pinnacle", "draftkings"):
                         exists = (
                             self.session.query(OddsSnapshot)

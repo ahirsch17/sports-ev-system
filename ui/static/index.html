@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="dark only" />
+  <meta name="theme-color" content="#0e0d0c" />
+  <title>Sports Edge</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=Libre+Baskerville:wght@400;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/styles.css?v=20260927d" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <h1>Sports Edge</h1>
+      <p class="tag">One card per game. Singles first. Same-game parlays only (Robinhood).</p>
+    </div>
+    <div class="controls">
+      <div class="seg" role="tablist" aria-label="Sport">
+        <button class="seg-btn active" data-sport="NFL" type="button">NFL</button>
+        <button class="seg-btn" data-sport="MLB" type="button">MLB</button>
+        <button class="seg-btn" data-sport="CFB" type="button">CFB</button>
+      </div>
+      <button id="view-bets" class="ghost" type="button">My bets</button>
+      <button id="refresh" class="ghost" type="button">Refresh</button>
+    </div>
+  </header>
+
+  <section id="bets-view" class="bets-view" hidden></section>
+
+  <section class="band">
+    <div>
+      <h2 id="slate-title">Loading...</h2>
+      <p id="slate-sub" class="muted">Open a game. Place singles first. SGP only if the card suggests it.</p>
+    </div>
+    <div class="stats" id="stats"></div>
+  </section>
+
+  <section class="focus-strip" id="focus-strip" hidden></section>
+
+  <main class="board-wrap">
+    <div class="board-toolbar">
+      <h3 class="section-label">Game cards</h3>
+      <div class="filter-seg" id="filter-seg">
+        <button type="button" class="filter-btn active" data-filter="all">All</button>
+        <button type="button" class="filter-btn" data-filter="BET">Bet</button>
+        <button type="button" class="filter-btn" data-filter="LEAN">Lean</button>
+        <button type="button" class="filter-btn" data-filter="WAIT">Wait on price</button>
+        <button type="button" class="filter-btn" data-filter="PASS">Sit</button>
+      </div>
+    </div>
+    <div id="board" class="game-board"></div>
+  </main>
+
+  <footer>
+    Research only. Fair odds are model prices. Robinhood: bet within one matchup only.
+  </footer>
+
+  <dialog id="log-dialog" class="log-dialog">
+    <form id="log-form" method="dialog">
+      <h3 id="log-title">Log bet</h3>
+      <p id="log-pick" class="log-pick"></p>
+      <label id="log-side-row">Side
+        <select name="side">
+          <option value="Over">Over</option>
+          <option value="Under">Under</option>
+        </select>
+      </label>
+      <label id="log-line-row">Line you got
+        <input name="line" type="number" step="0.5" inputmode="decimal" />
+      </label>
+      <label>Price you paid
+        <input name="price" type="text" placeholder="-150, +120, or 62c" autocomplete="off" />
+      </label>
+      <label>Stake (units)
+        <input name="stake" type="number" step="0.05" min="0.05" inputmode="decimal" />
+      </label>
+      <p class="log-hint muted">Robinhood contracts: enter the cents you paid, e.g. 62c.</p>
+      <p id="log-error" class="log-error"></p>
+      <div class="log-actions">
+        <button type="button" id="log-cancel" class="ghost">Cancel</button>
+        <button type="submit" class="primary">Save bet</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="/static/app.js?v=20260927d"></script>
+</body>
+</html>

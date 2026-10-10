@@ -17,7 +17,7 @@ Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction Silent
 
 $Action = New-ScheduledTaskAction -Execute $BatPath -WorkingDirectory $ProjectRoot
 $Trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).Date.AddMinutes(5) `
-    -RepetitionInterval (New-TimeSpan -Hours 8) `
+    -RepetitionInterval (New-TimeSpan -Hours 4) `
     -RepetitionDuration (New-TimeSpan -Days 3650)
 $Settings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries `

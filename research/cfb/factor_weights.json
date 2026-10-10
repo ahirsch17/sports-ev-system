@@ -1,0 +1,64 @@
+{
+  "factors": {
+    "elo": {
+      "weight": 0.48,
+      "description": "Pre-game team Elo (higher K than NFL; cupcake updates shrunk)"
+    },
+    "recent_form": {
+      "weight": 0.22,
+      "description": "Rolling points for/against (last 4 games)"
+    },
+    "home_field": {
+      "weight": 0.14,
+      "description": "CFB HFA historically larger than NFL; zeroed on neutral sites"
+    },
+    "rest": {
+      "weight": 0.0,
+      "description": "Rest / short week days between games when available"
+    },
+    "conference_rivalry": {
+      "weight": 0.0,
+      "description": "Conference game flag; mild rivalry/notes signal when present"
+    },
+    "similar_opponent": {
+      "weight": 0.0,
+      "description": "Light similar-opponent form (thinner than NFL deep matchups)"
+    },
+    "injuries": {
+      "weight": 0.0,
+      "description": "CFB injury feeds are sparse/unreliable; intentionally unused"
+    }
+  },
+  "elo": {
+    "k": 28.0,
+    "hfa_elo": 65.0,
+    "points_per_elo": 0.04,
+    "cupcake_k_scale": 0.35,
+    "season_regress": 0.25,
+    "blend": 0.6
+  },
+  "hfa_points": 3.0,
+  "form_games": 4,
+  "form_scale": 0.28,
+  "rest_pts_per_day": 0.15,
+  "short_week_days": 6,
+  "short_week_pts": 0.7,
+  "rest_clamp": 2.0,
+  "conf_game_hfa_dampen": 0.15,
+  "rivalry_margin_bump": 0.35,
+  "similar_scale": 0.12,
+  "hfa_extra_points": 0.4,
+  "margin_sigma": 16.5,
+  "total_sigma": 12.0,
+  "league_total": 52.0,
+  "edge_thresholds": {
+    "totals_min_ev": 0.04,
+    "spreads_min_ev": 0.05,
+    "h2h_min_ev": 0.05
+  },
+  "confidence": {
+    "min_abs_margin": 10.0,
+    "notes": "Walk-forward gated accuracy 0.9167 on |margin|>=10 (n=420)"
+  },
+  "notes": "CFB audit chose elo_form_k28_hfa65_b0.6: K=28.0, HFA_elo=65.0, blend=0.6, gate=10. Rest/conference/similar weights intentionally 0 after ablation (full family did not beat elo+form). Injuries unused. Gated ~92% is both-FBS only (cupcakes excluded); favorites are often chalk so accuracy != +EV. Source: cfbfastR-data schedules (GitHub CSV / CFBD-backed)."
+}

@@ -18,8 +18,8 @@ def session() -> Session:
 
 
 def _add_bet(session: Session, *, game_id: str, edge: float, outcome: str | None = "win") -> None:
-    kickoff = datetime(2026, 8, 1, 18, 0, tzinfo=timezone.utc)
-    flagged = datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc)
+    flagged = datetime.now(timezone.utc) - timedelta(days=2)
+    kickoff = flagged + timedelta(hours=6)
     session.add(
         Game(
             game_id=game_id,

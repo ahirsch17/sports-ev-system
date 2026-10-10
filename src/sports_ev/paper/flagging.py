@@ -16,6 +16,7 @@ from sports_ev.integrity.circuit_breaker import CircuitBreaker
 from sports_ev.models.artifact import NflSpreadModel
 from sports_ev.models.mlb_artifact import MlbMoneylineModel
 from sports_ev.models.mlb_strategy import ModelMoneylineStrategy
+from sports_ev.models.nfl_edge_strategy import NflEdgeSpreadStrategy, build_nfl_edge_strategy
 from sports_ev.models.strategy import ModelSpreadStrategy
 from sports_ev.paper.kelly import kelly_fraction
 from sports_ev.pricing import expected_value
@@ -108,6 +109,7 @@ class OpportunityFlagger:
         soft_book: str = "draftkings",
         model_path: str | None = None,
         market_type: str | None = None,
+        model_weight: float | None = None,
     ) -> FlagResult:
         config = get_sport_config(sport, self.settings)
         market_type = market_type or config.default_market
@@ -119,7 +121,16 @@ class OpportunityFlagger:
             result.errors.append(f"Source {source_key} is degraded — suppressing flags")
             return result
 
-        if strategy == "model":
+        blend_strategy: NflEdgeSpreadStrategy | None = None
+        if strategy == "nfl-edge":
+            if config.sport != "nfl" or market_type != "spread":
+                result.errors.append("nfl-edge strategy supports NFL spreads only")
+                return result
+            blend_strategy = build_nfl_edge_strategy(soft_book=soft_book, model_weight=model_weight)
+            bet_strategy = blend_strategy
+            model_version = f"{blend_strategy.name}@w{blend_strategy.model_weight:.2f}"
+            strategy_name = blend_strategy.name
+        elif strategy == "model":
             path = model_path or (
                 self.settings.mlb_model_artifact_path
                 if config.sport == "mlb"
@@ -161,8 +172,13 @@ class OpportunityFlagger:
 
             result.opportunities_found += len(candidates)
             vector = None
+            feature_snapshot: dict = {}
             if strategy == "model":
                 vector = pipeline.build_for_game(game.game_id, validate_leakage=True)
+                feature_snapshot = vector.features
+            elif blend_strategy is not None:
+                blend = blend_strategy.blended_margin(self.session, game, self.settings) or {}
+                feature_snapshot = {**blend, "model_weight": blend_strategy.model_weight}
 
             shap_top: dict[str, float] | None = None
             if strategy == "model" and config.sport == "mlb" and isinstance(bet_strategy, ModelMoneylineStrategy) and vector:
@@ -178,6 +194,11 @@ class OpportunityFlagger:
                     result.skipped_existing += 1
                     continue
 
+                # Strategies quote the home line; paper bets store the bettor's own line.
+                line_taken = candidate.line
+                if line_taken is not None and side == BetSide.AWAY.value:
+                    line_taken = -float(line_taken)
+
                 stake_pct = kelly_fraction(
                     candidate.true_prob,
                     candidate.american_odds,
@@ -192,7 +213,7 @@ class OpportunityFlagger:
                     strategy_name=strategy_name,
                     model_version=model_version,
                     candidate=candidate,
-                    feature_snapshot=vector.features if vector else {},
+                    feature_snapshot=feature_snapshot,
                     shap_top=shap_top,
                     sources=sources,
                     market_type=market_type,
@@ -207,7 +228,7 @@ class OpportunityFlagger:
                         flagged_at=candidate.decision_time,
                         suggested_stake_pct=stake_pct,
                         odds_taken=candidate.american_odds,
-                        line_taken=candidate.line,
+                        line_taken=line_taken,
                         model_version=model_version or strategy_name,
                         edge_pct=candidate.edge_pct,
                         audit_trail=audit,

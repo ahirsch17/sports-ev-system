@@ -65,18 +65,20 @@ def train_from_rows(rows: list[LabeledRow], config: TrainConfig | None = None) -
         num_boost_round=config.num_boost_round,
     )
 
+    # Boosted in-sample scores are overfit; calibrating on them makes probabilities
+    # (and Kelly stakes) overconfident. Use the held-out slice when one exists.
     calibrator = IsotonicRegression(out_of_bounds="clip")
-    raw_train = booster.predict(x_train)
-    calibrator.fit(raw_train, y_train)
-
     raw_val_brier = None
     calibrated_val_brier = None
     if split.validation:
         x_val, y_val = rows_to_matrix(split.validation, feature_names)
         raw_val = booster.predict(x_val)
+        calibrator.fit(raw_val, y_val)
         calibrated_val = np.clip(calibrator.predict(raw_val), 0.0, 1.0)
         raw_val_brier = float(brier_score_loss(y_val, raw_val))
         calibrated_val_brier = float(brier_score_loss(y_val, calibrated_val))
+    else:
+        calibrator.fit(booster.predict(x_train), y_train)
 
     model = NflSpreadModel(
         booster=booster,

@@ -120,14 +120,13 @@ def count_local_connections(port: int) -> int:
     except (OSError, subprocess.SubprocessError):
         return 0
 
-    needle = f":{port}"
+    # Windows/Linux print "127.0.0.1:8501"; macOS/BSD print "127.0.0.1.8501".
+    needles = (f"127.0.0.1:{port}", f"127.0.0.1.{port}", f"]:{port}", f"::1.{port}")
     count = 0
     for line in proc.stdout.splitlines():
         if "ESTABLISHED" not in line.upper():
             continue
-        if needle not in line:
-            continue
-        if "127.0.0.1" in line or "[::1]" in line or "::1" in line:
+        if any(needle in line for needle in needles):
             count += 1
     return count
 
@@ -204,19 +203,33 @@ class _HeartbeatHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
 
+class _LoopbackHTTPServer(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def server_bind(self) -> None:
+        # HTTPServer.server_bind calls socket.getfqdn(), which can block for
+        # seconds on macOS reverse-DNS lookups; loopback never needs it.
+        import socketserver
+
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = str(host)
+        self.server_port = port
+
+
 class HeartbeatServer:
     """Tiny localhost server; browser pings here so tab-close stops heartbeats."""
 
     def __init__(self, streamlit_port: int, listen_port: int | None = None):
         self.streamlit_port = streamlit_port
         self.listen_port = listen_port if listen_port is not None else heartbeat_listen_port(streamlit_port)
-        self._httpd: ThreadingHTTPServer | None = None
+        self._httpd: _LoopbackHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
     def start(self) -> None:
         if self._httpd is not None:
             return
-        self._httpd = ThreadingHTTPServer(("127.0.0.1", self.listen_port), _HeartbeatHandler)
+        self._httpd = _LoopbackHTTPServer(("127.0.0.1", self.listen_port), _HeartbeatHandler)
         self._httpd.streamlit_port = self.streamlit_port  # type: ignore[attr-defined]
         self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
         self._thread.start()

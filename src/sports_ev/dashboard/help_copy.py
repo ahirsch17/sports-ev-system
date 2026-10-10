@@ -46,7 +46,8 @@ PROFIT_LOSS_HELP = "Actual profit or loss in dollars after the bet settled."
 
 DAYS_AHEAD_HELP = "How many days of upcoming games to scan for model picks and auto-flagging."
 STRATEGY_HELP = (
-    "Sharp vs soft compares Pinnacle to your soft book. ML model uses the trained model for picks."
+    "Sharp vs soft compares Pinnacle to your soft book. ML model uses the trained model for picks. "
+    "NFL Edge blends the nfl_edge formula model with Pinnacle's line (NFL spreads only)."
 )
 SOFT_BOOK_HELP = "Sportsbook used for soft lines, model picks, and paper bet placement."
 
