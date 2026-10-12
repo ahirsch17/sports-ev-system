@@ -45,6 +45,16 @@ def _best_side(edges: list[dict], market: str) -> dict | None:
     return max(rows, key=lambda e: _f(e.get("model_prob")), default=None)
 
 
+def _side_quote(edges: list[dict], market: str, *, want_home: bool) -> dict | None:
+    """The book quote for one side of a two-way market (matched by home/away, not by name)."""
+    for e in edges:
+        if e.get("market") != market or e.get("model_prob") is None:
+            continue
+        if (e.get("selection") == e.get("home_team")) == want_home:
+            return e
+    return None
+
+
 def _has_edge(edge: dict) -> bool:
     return _f(edge.get("ev")) >= MIN_CARD_EV and _truthy(edge.get("passes_threshold"))
 
@@ -169,9 +179,8 @@ def build_game_board(
 
         # Book lines: for each market, the side the model likes at the book's line/price
         medges = edges_by_game.get(gid) or []
-        ml_edge = _best_side(medges, "h2h")
-        if ml_edge is not None and _f(ml_edge.get("model_prob")) < 0.5:
-            ml_edge = None
+        # Winner card prices the team it picks, never the other side's quote.
+        ml_edge = _side_quote(medges, "h2h", want_home=favorite == home)
         spread_edge = _best_side(medges, "spreads")
         total_edge = _best_side(medges, "totals")
 
@@ -186,7 +195,7 @@ def build_game_board(
         else:
             winner_stake = "skip"
         if ml_edge is not None and ml_edge.get("dk_price") is not None and not _has_edge(ml_edge):
-            winner_stake = "skip (price too short)"
+            winner_stake = f"skip (with market: {_f(ml_edge.get('model_prob')):.0%}, no edge)"
 
         if spread_edge is not None:
             spread_row = {
