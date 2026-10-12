@@ -109,7 +109,7 @@
     "notes": "Walk-forward 2022-2025 (n=1087): |margin|>=7 gated ~73.9% (n=218); |margin|>=5 ~72%; skip fav QB-out ~74%; dog QB-out slice ~83% (n~42, small). ATS ~50% so prefer ML winners over spreads. Elo blend 0.62, deep 0.30, sit 0.45."
   },
   "market_blend": {
-    "model_weight": 0.15,
+    "model_weight": 0.1,
     "seasons": [
       2019,
       2020,
@@ -120,7 +120,7 @@
       2025
     ],
     "n": 1871,
-    "ats_logloss": 0.69268,
+    "ats_logloss": 0.69282,
     "ats_logloss_market_only": 0.69315,
     "notes": "Blend of nfl_edge margin with closing-market margin used by sports_ev NflEdgeSpreadStrategy."
   }
