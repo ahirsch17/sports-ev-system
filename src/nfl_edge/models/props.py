@@ -77,17 +77,193 @@ def rolling_player_yards(player_stats: pl.DataFrame, *, window: int = 5) -> pl.D
 
     # roll_* = before that row's game; post_roll_* = including it (used when projecting the next game)
     df = df.with_columns(*_rolls(1, ""), *_rolls(0, "post_"))
+    df = _add_receiving_usage(df)
     keep = ["season", "week", "team", "player_name"] + [
         f"{prefix}roll_{name}{suffix}"
         for prefix in ("", "post_")
         for name in ("pass", "rush", "recv")
         for suffix in ("", "_std")
+    ] + [
+        f"{prefix}roll_{name}"
+        for prefix in ("", "post_")
+        for name in ("recv_share", "recv_ypt", "usage_collapsed", "season_ypg")
     ]
     if "position" in df.columns:
         keep.append("position")
     if "player_id" in df.columns:
         keep.append("player_id")
     return df.select([k for k in keep if k in df.columns])
+
+
+def _weighted_recent(col: str, *, before_row: bool) -> pl.Expr:
+    """Newest-weighted mean of the last three games. Null games are left out."""
+    start = 1 if before_row else 0
+    weights = (2.25, 1.5, 1.0)
+    num = pl.lit(0.0)
+    den = pl.lit(0.0)
+    for offset, weight in enumerate(weights):
+        value = pl.col(col).shift(start + offset).over("player_name")
+        num = num + pl.when(value.is_not_null()).then(value * weight).otherwise(0.0)
+        den = den + pl.when(value.is_not_null()).then(weight).otherwise(0.0)
+    return pl.when(den > 0).then(num / den).otherwise(None)
+
+
+def _add_receiving_usage(df: pl.DataFrame) -> pl.DataFrame:
+    """Recent target share, not the season yardage mean.
+
+    A two-game spike stays in a five-game yardage average after the targets
+    disappear. The last two games both at 3 targets or fewer is a collapse.
+    """
+    if "targets" not in df.columns:
+        return df
+    df = df.with_columns(pl.col("targets").fill_null(0.0).cast(pl.Float64))
+    attempts = pl.col("attempts").fill_null(0.0).cast(pl.Float64) if "attempts" in df.columns else pl.lit(0.0)
+    df = df.with_columns(attempts.alias("_att"))
+    team_week = df.group_by(["season", "week", "team"]).agg(
+        pl.col("_att").sum().alias("_team_att"),
+        pl.col("targets").sum().alias("_team_tgt"),
+    )
+    df = df.join(team_week, on=["season", "week", "team"], how="left")
+    df = df.with_columns(
+        pl.when(pl.col("_team_att") > 0).then(pl.col("_team_att")).otherwise(pl.col("_team_tgt")).alias("_team_attempts"),
+        pl.when(pl.col("targets") > 0).then(pl.col("receiving_yards") / pl.col("targets")).otherwise(None).alias("_ypt"),
+    )
+    df = df.with_columns(
+        pl.when(pl.col("_team_attempts") > 0)
+        .then(pl.col("targets") / pl.col("_team_attempts"))
+        .otherwise(0.0)
+        .alias("_tgt_share")
+    )
+    current = pl.col("targets")
+    previous = pl.col("targets").shift(1).over("player_name")
+    before_that = pl.col("targets").shift(2).over("player_name")
+    season_incl = pl.col("receiving_yards").cum_sum().over(["player_name", "season"]) / pl.col(
+        "receiving_yards"
+    ).cum_count().over(["player_name", "season"])
+    df = df.with_columns(
+        _weighted_recent("_tgt_share", before_row=True).alias("roll_recv_share"),
+        _weighted_recent("_tgt_share", before_row=False).alias("post_roll_recv_share"),
+        _weighted_recent("_ypt", before_row=True).alias("roll_recv_ypt"),
+        _weighted_recent("_ypt", before_row=False).alias("post_roll_recv_ypt"),
+        (previous.is_not_null() & before_that.is_not_null() & (previous <= 3) & (before_that <= 3)).alias(
+            "roll_usage_collapsed"
+        ),
+        (current.is_not_null() & previous.is_not_null() & (current <= 3) & (previous <= 3)).alias(
+            "post_roll_usage_collapsed"
+        ),
+        season_incl.shift(1).over(["player_name", "season"]).alias("roll_season_ypg"),
+        season_incl.alias("post_roll_season_ypg"),
+    )
+    return df.drop([c for c in ("_att", "_team_att", "_team_tgt", "_team_attempts", "_ypt", "_tgt_share") if c in df.columns])
+
+
+def _featured_index(shares: list[float]) -> int | None:
+    """A featured receiver needs a clear lead. A committee has no playmaker."""
+    if not shares or max(shares) <= 0:
+        return None
+    order = sorted(range(len(shares)), key=lambda index: shares[index], reverse=True)
+    top = shares[order[0]]
+    second = shares[order[1]] if len(order) > 1 else 0.0
+    if second <= 0 or top >= second * 1.35:
+        return order[0]
+    return None
+
+
+def reconcile_receiving(rows: list[dict], team_pass_yards: float) -> list[dict]:
+    """One pass budget per team, and at most one playmaker.
+
+    Target shares are scaled so they sum to at most 1. Yards are capped by the
+    team pass total. Only a clear usage lead is featured; everyone else is held
+    to 55% of that lead. A collapsed target share cannot be the playmaker.
+    """
+    if not rows:
+        return []
+    attempts = max(float(team_pass_yards), 0.0) / 7.1
+    shares = [max(float(row.get("roll_recv_share") or 0.0), 0.0) for row in rows]
+    total = sum(shares)
+    if total > 1:
+        shares = [share / total for share in shares]
+    raw = []
+    for row, share in zip(rows, shares):
+        ypt = float(row.get("roll_recv_ypt") or 0.0)
+        raw.append(max(attempts, 0.0) * share * ypt)
+    ceiling = max(float(team_pass_yards), 0.0)
+    if ceiling > 0 and sum(raw) > ceiling:
+        factor = ceiling / sum(raw)
+        raw = [yards * factor for yards in raw]
+    featured = _featured_index(shares)
+    if featured is not None and not row_collapsed(rows[featured]):
+        lead = raw[featured]
+        raw = [yards if index == featured else min(yards, lead * 0.55) for index, yards in enumerate(raw)]
+    out = []
+    for index, row in enumerate(rows):
+        collapsed = row_collapsed(row)
+        is_featured = index == featured and not collapsed
+        season = float(row.get("roll_season_ypg") or 0.0)
+        yards = raw[index]
+        lean = None
+        if is_featured:
+            lean = "featured"
+        elif collapsed and yards + 12 < season:
+            lean = "under"
+        updated = dict(row)
+        updated.update(
+            {
+                "mu_recv": round(yards, 1),
+                "recv_share": round(shares[index], 3),
+                "role": "featured" if is_featured else "secondary",
+                "lean": lean,
+                "season_ypg": round(season, 1),
+            }
+        )
+        out.append(updated)
+    return out
+
+
+def _te_mult(game_row: dict, team: str, home: str, position: object) -> float:
+    """Tight ends shrink further when this defense takes that position away."""
+    if not str(position or "").upper().startswith("TE"):
+        return 1.0
+    key = "home_te_mult" if team == home else "away_te_mult"
+    try:
+        value = float(game_row.get(key) or 1.0)
+    except (TypeError, ValueError):
+        return 1.0
+    if value != value or value <= 0:
+        return 1.0
+    return value
+
+
+def row_collapsed(row: dict) -> bool:
+    return bool(row.get("roll_usage_collapsed"))
+
+
+def listed_receiving(rows: list[dict]) -> list[dict]:
+    """The receiving bets for one team: one playmaker, plus any under from a target drop."""
+    recv = [row for row in rows if str(row.get("market")) == "player_reception_yds"]
+    if not recv:
+        return []
+    if any(row.get("role") for row in recv):
+        featured = [row for row in recv if row.get("role") == "featured"][:1]
+        chosen = {row.get("player") for row in featured}
+        unders = [row for row in recv if row.get("lean") == "under" and row.get("player") not in chosen]
+        return featured + unders
+    recv.sort(key=lambda row: float(row.get("mu") or 0), reverse=True)
+    return recv[:1]
+
+
+def is_extra_playmaker(row: dict, picked: list[dict]) -> bool:
+    """A receiving row that is not this team's one playmaker."""
+    if str(row.get("market")) != "player_reception_yds" or row.get("lean") == "under":
+        return False
+    if row.get("role") == "secondary":
+        return True
+    return any(
+        item.get("team") == row.get("team")
+        and str(item.get("market")) == "player_reception_yds"
+        and item.get("lean") != "under"
+        for item in picked
+    )
 
 
 def _depth_starters(
@@ -300,14 +476,27 @@ def project_props_for_game(
                 rushers = rushers.filter(pl.col("player_name").is_in(keep))
         rushers = rushers.sort("roll_rush", descending=True).head(top_n_rush)
 
-        receivers = tdf.filter(
-            pl.col("roll_recv").is_not_null()
-            & (pl.col("roll_recv") >= 25)
-            & (
-                pl.col("position").is_null()
-                | pl.col("position").cast(pl.Utf8).str.to_uppercase().is_in(["WR", "TE", "RB", "HB", "FB"])
+        share_ready = "roll_recv_share" in tdf.columns
+        if share_ready:
+            receivers = tdf.filter(
+                (
+                    pl.col("position").is_null()
+                    | pl.col("position").cast(pl.Utf8).str.to_uppercase().is_in(["WR", "TE", "RB", "HB", "FB"])
+                )
+                & (
+                    (pl.col("roll_recv_share").fill_null(0) >= 0.04)
+                    | pl.col("roll_usage_collapsed").fill_null(False)
+                )
             )
-        )
+        else:
+            receivers = tdf.filter(
+                pl.col("roll_recv").is_not_null()
+                & (pl.col("roll_recv") >= 25)
+                & (
+                    pl.col("position").is_null()
+                    | pl.col("position").cast(pl.Utf8).str.to_uppercase().is_in(["WR", "TE", "RB", "HB", "FB"])
+                )
+            )
         if skill_depth:
             keep = [
                 r["player_name"]
@@ -316,7 +505,8 @@ def project_props_for_game(
             ]
             if keep:
                 receivers = receivers.filter(pl.col("player_name").is_in(keep))
-        receivers = receivers.sort("roll_recv", descending=True).head(top_n_recv)
+        if not share_ready:
+            receivers = receivers.sort("roll_recv", descending=True).head(top_n_recv)
 
         pass_sum = float(passers["roll_pass"].sum()) or 1.0 if passers.height else 1.0
         for r in passers.iter_rows(named=True):
@@ -369,29 +559,62 @@ def project_props_for_game(
                 }
             )
 
-        recv_sum = float(receivers["roll_recv"].sum()) or 1.0
-        team_recv_pool = team_pass_pred * 0.60
-        for r in receivers.iter_rows(named=True):
-            share = float(r["roll_recv"]) / recv_sum
-            team_share_mu = team_recv_pool * min(share, 0.45)
-            roll = float(r["roll_recv"])
-            mu = 0.50 * roll + 0.50 * team_share_mu
-            sigma = float(r.get("roll_recv_std") or 28.0)
-            sigma = max(sigma, 20.0)
-            props.append(
-                {
-                    "game_id": game_row["game_id"],
-                    "team": team,
-                    "opponent": away if team == home else home,
-                    "player": r["player_name"],
-                    "market": "player_reception_yds",
-                    "mu": round(mu, 1),
-                    "sigma": round(sigma, 1),
-                    "roll": round(roll, 1),
-                    "edge_vs_roll": round(mu - roll, 1),
-                    "priority": 2,
-                }
+        if share_ready:
+            ranked = reconcile_receiving(list(receivers.iter_rows(named=True)), team_pass_pred)
+            ranked.sort(
+                key=lambda row: (
+                    0 if row.get("role") == "featured" else 1 if row.get("lean") == "under" else 2,
+                    -(row.get("mu_recv") or 0),
+                )
             )
+            kept = [row for row in ranked if row.get("role") == "featured" or row.get("lean") == "under"]
+            rest = [row for row in ranked if row not in kept and (row.get("mu_recv") or 0) >= 8]
+            ranked = (kept + rest)[: max(top_n_recv, len(kept))]
+            for r in ranked:
+                mu = float(r["mu_recv"]) * _te_mult(game_row, team, home, r.get("position"))
+                roll = float(r.get("roll_recv") or mu)
+                sigma = float(r.get("roll_recv_std") or 28.0)
+                props.append(
+                    {
+                        "game_id": game_row["game_id"],
+                        "team": team,
+                        "opponent": away if team == home else home,
+                        "player": r["player_name"],
+                        "market": "player_reception_yds",
+                        "mu": round(mu, 1),
+                        "sigma": round(max(sigma, 20.0), 1),
+                        "roll": round(roll, 1),
+                        "edge_vs_roll": round(mu - roll, 1),
+                        "priority": 2 if r.get("lean") else 4,
+                        "role": r.get("role"),
+                        "lean": r.get("lean"),
+                        "season_ypg": r.get("season_ypg"),
+                    }
+                )
+        else:
+            recv_sum = float(receivers["roll_recv"].sum()) or 1.0
+            team_recv_pool = team_pass_pred * 0.60
+            for r in receivers.iter_rows(named=True):
+                share = float(r["roll_recv"]) / recv_sum
+                team_share_mu = team_recv_pool * min(share, 0.45)
+                roll = float(r["roll_recv"])
+                mu = (0.50 * roll + 0.50 * team_share_mu) * _te_mult(game_row, team, home, r.get("position"))
+                sigma = float(r.get("roll_recv_std") or 28.0)
+                sigma = max(sigma, 20.0)
+                props.append(
+                    {
+                        "game_id": game_row["game_id"],
+                        "team": team,
+                        "opponent": away if team == home else home,
+                        "player": r["player_name"],
+                        "market": "player_reception_yds",
+                        "mu": round(mu, 1),
+                        "sigma": round(sigma, 1),
+                        "roll": round(roll, 1),
+                        "edge_vs_roll": round(mu - roll, 1),
+                        "priority": 2,
+                    }
+                )
 
     return props
 

@@ -11,6 +11,13 @@ from nfl_edge.features.ratings import (
     rolling_team_ratings,
 )
 from nfl_edge.features.elo import build_elo_table
+from nfl_edge.features.script import (
+    build_te_allowed_lookup,
+    script_note,
+    scripted_pass_yards,
+    scripted_rush_yards,
+    te_volume_multiplier,
+)
 from nfl_edge.features.weather import enrich_schedule_weather, form_weight_for_week, load_weights
 
 
@@ -48,6 +55,7 @@ def build_matchup_frame(
     use_situational: bool = True,
     use_weather: bool = True,
     use_form: bool = True,
+    player_stats: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
     """
     One row per scheduled game with predicted components.
@@ -99,6 +107,10 @@ def build_matchup_frame(
         "away_inj_pass_pct": 0.0,
         "home_inj_rush_pct": 0.0,
         "away_inj_rush_pct": 0.0,
+        "home_catchers_out": 0.0,
+        "away_catchers_out": 0.0,
+        "home_catchers_n": 0,
+        "away_catchers_n": 0,
         "home_sim_margin_adj": 0.0,
         "away_sim_margin_adj": 0.0,
         "home_mm_points": 0.0,
@@ -127,6 +139,7 @@ def build_matchup_frame(
         else:
             games = games.with_columns(pl.lit(val).alias(col))
 
+    te_lookup, league_te = build_te_allowed_lookup(player_stats, schedules)
     pred_rows = []
     rating_rows = []
     for r in games.iter_rows(named=True):
@@ -194,60 +207,69 @@ def build_matchup_frame(
         home_pts = (total + margin) / 2.0
         away_pts = (total - margin) / 2.0
 
-        base_pass = 230.0
-        base_rush = 115.0
         wx_pass = float(r.get("wx_pass_pct") or 0.0) if use_weather else 0.0
         wx_rush = float(r.get("wx_rush_pct") or 0.0) if use_weather else 0.0
-        inj_h_pass = float(r.get("home_inj_pass_pct") or 0.0) if use_injuries else 0.0
-        inj_a_pass = float(r.get("away_inj_pass_pct") or 0.0) if use_injuries else 0.0
         inj_h_rush = float(r.get("home_inj_rush_pct") or 0.0) if use_injuries else 0.0
         inj_a_rush = float(r.get("away_inj_rush_pct") or 0.0) if use_injuries else 0.0
         pace_h_pass = sit_w * float(r.get("home_pace_pass_pct") or 0.0) if use_situational else 0.0
         pace_a_pass = sit_w * float(r.get("away_pace_pass_pct") or 0.0) if use_situational else 0.0
         pace_h_rush = sit_w * float(r.get("home_pace_rush_pct") or 0.0) if use_situational else 0.0
         pace_a_rush = sit_w * float(r.get("away_pace_rush_pct") or 0.0) if use_situational else 0.0
-        home_pass = base_pass * (
-            1
-            + wx_pass
-            + inj_h_pass
-            + pace_h_pass
-            + deep_w * float(r.get("home_mm_pass_pct") or 0.0) * mm_scale
+        home_catchers = float(r.get("home_catchers_out") or 0.0) if use_injuries else 0.0
+        away_catchers = float(r.get("away_catchers_out") or 0.0) if use_injuries else 0.0
+        home_catchers_n = int(r.get("home_catchers_n") or 0) if use_injuries else 0
+        away_catchers_n = int(r.get("away_catchers_n") or 0) if use_injuries else 0
+
+        # Offense production times what this defense allows. Missing catchers
+        # move throws to the run; a stingy pass defense makes that shift larger.
+        home_pass, home_cut, home_pass_index = scripted_pass_yards(
+            home_r.get("roll_pass_yards"),
+            away_r.get("roll_pass_allowed"),
+            catchers_out=home_catchers,
         )
-        away_pass = base_pass * (
-            1
-            + wx_pass
-            + inj_a_pass
-            + pace_a_pass
-            + deep_w * float(r.get("away_mm_pass_pct") or 0.0) * mm_scale
+        away_pass, away_cut, away_pass_index = scripted_pass_yards(
+            away_r.get("roll_pass_yards"),
+            home_r.get("roll_pass_allowed"),
+            catchers_out=away_catchers,
         )
-        home_rush = base_rush * (
-            1
-            + wx_rush
-            + inj_h_rush
-            + pace_h_rush
-            + deep_w * float(r.get("home_mm_rush_pct") or 0.0) * mm_scale
+        home_before = home_pass / (1.0 - home_cut) if home_cut < 0.99 else home_pass
+        away_before = away_pass / (1.0 - away_cut) if away_cut < 0.99 else away_pass
+        home_rush = scripted_rush_yards(
+            home_r.get("roll_rush_yards"),
+            away_r.get("roll_rush_allowed"),
+            pass_before_cut=home_before,
+            cut=home_cut,
         )
-        away_rush = base_rush * (
-            1
-            + wx_rush
-            + inj_a_rush
-            + pace_a_rush
-            + deep_w * float(r.get("away_mm_rush_pct") or 0.0) * mm_scale
+        away_rush = scripted_rush_yards(
+            away_r.get("roll_rush_yards"),
+            home_r.get("roll_rush_allowed"),
+            pass_before_cut=away_before,
+            cut=away_cut,
         )
 
-        home_pass *= home_pts / league
-        away_pass *= away_pts / league
-        home_rush *= 0.7 + 0.3 * home_pts / league
-        away_rush *= 0.7 + 0.3 * away_pts / league
+        home_deep_pass = deep_w * float(r.get("home_mm_pass_pct") or 0.0) * mm_scale
+        away_deep_pass = deep_w * float(r.get("away_mm_pass_pct") or 0.0) * mm_scale
+        home_deep_rush = deep_w * float(r.get("home_mm_rush_pct") or 0.0) * mm_scale
+        away_deep_rush = deep_w * float(r.get("away_mm_rush_pct") or 0.0) * mm_scale
+        home_pass *= 1 + wx_pass + pace_h_pass + home_deep_pass
+        away_pass *= 1 + wx_pass + pace_a_pass + away_deep_pass
+        home_rush *= 1 + wx_rush + pace_h_rush + inj_h_rush + home_deep_rush
+        away_rush *= 1 + wx_rush + pace_a_rush + inj_a_rush + away_deep_rush
+        if use_injuries and float(r.get("home_qb_out") or 0.0) >= 0.6:
+            home_pass *= 0.75
+        if use_injuries and float(r.get("away_qb_out") or 0.0) >= 0.6:
+            away_pass *= 0.75
+        home_pass *= 0.80 + 0.20 * (home_pts / league)
+        away_pass *= 0.80 + 0.20 * (away_pts / league)
+        home_rush *= 0.85 + 0.15 * (home_pts / league)
+        away_rush *= 0.85 + 0.15 * (away_pts / league)
 
-        if home_r.get("roll_pass_yards"):
-            home_pass = 0.5 * home_pass + 0.5 * float(home_r["roll_pass_yards"])
-        if away_r.get("roll_pass_yards"):
-            away_pass = 0.5 * away_pass + 0.5 * float(away_r["roll_pass_yards"])
-        if home_r.get("roll_rush_yards"):
-            home_rush = 0.5 * home_rush + 0.5 * float(home_r["roll_rush_yards"])
-        if away_r.get("roll_rush_yards"):
-            away_rush = 0.5 * away_rush + 0.5 * float(away_r["roll_rush_yards"])
+        home_te_allowed = te_lookup.get((str(r["away_team"]), season, week))
+        away_te_allowed = te_lookup.get((str(r["home_team"]), season, week))
+        home_te_mult = te_volume_multiplier(home_te_allowed, home_pass_index, league_te=league_te)
+        away_te_mult = te_volume_multiplier(away_te_allowed, away_pass_index, league_te=league_te)
+        home_script = script_note(str(r["home_team"]), home_catchers_n, home_pass_index, home_te_mult)
+        away_script = script_note(str(r["away_team"]), away_catchers_n, away_pass_index, away_te_mult)
 
         rating_rows.append(
             {
@@ -273,6 +295,12 @@ def build_matchup_frame(
                 "pred_away_pass_yds": round(away_pass, 1),
                 "pred_home_rush_yds": round(home_rush, 1),
                 "pred_away_rush_yds": round(away_rush, 1),
+                "home_pass_index": round(home_pass_index, 3),
+                "away_pass_index": round(away_pass_index, 3),
+                "home_te_mult": round(home_te_mult, 3),
+                "away_te_mult": round(away_te_mult, 3),
+                "home_script_note": home_script,
+                "away_script_note": away_script,
                 "form_weight": fw,
             }
         )

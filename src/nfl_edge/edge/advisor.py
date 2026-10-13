@@ -366,6 +366,40 @@ _MARKET_LABEL = {
 }
 
 
+def _prop_row(p, player, label, mu, sigma, roll, edge, over_line, under_line, quality, action, verb, instruction, conf_note, gate, market) -> dict:
+    return {
+        "player": player,
+        "team": p.get("team"),
+        "opponent": p.get("opponent"),
+        "game_id": p.get("game_id"),
+        "market": market,
+        "market_label": label,
+        "mu": mu,
+        "sigma": round(sigma, 1),
+        "roll": roll,
+        "edge_vs_roll": edge,
+        "over_if_line_at_or_below": over_line,
+        "under_if_line_at_or_above": under_line,
+        "quality": quality,
+        "action": action,
+        "verb": verb,
+        "instruction": instruction,
+        "why": conf_note,
+        "stake": "0.5u" if action == "BET" else ("0.25u" if action == "LEAN" else "0u"),
+        "role": p.get("role"),
+        "lean": p.get("lean"),
+        "rank_score": round(
+            (3.0 if market == "player_pass_yds" else (2.2 if market == "player_reception_yds" else 1.0))
+            + min(roll, 300) / 100.0
+            + abs(edge) / 12.0
+            + (1.0 if abs(edge) >= gate else 0.0)
+            + (2.0 if p.get("lean") in {"featured", "under"} else 0.0)
+            - _f(p.get("priority"), 2) * 0.05,
+            4,
+        ),
+    }
+
+
 def _prop_plays(props: list[dict], weights: dict) -> list[dict]:
     """Rank player props into clear TAKE / COMPARE / SKIP instructions (full-game only)."""
     pw = weights.get("props") or {}
@@ -399,6 +433,33 @@ def _prop_plays(props: list[dict], weights: dict) -> list[dict]:
             conf_note = "Pass props preferred (audit ~69% when |mu-roll|>=20)."
         elif market == "player_reception_yds":
             gate = recv_min
+            role = p.get("role")
+            if role == "secondary" and p.get("lean") != "under":
+                continue
+            if role == "featured":
+                quality = "GOOD"
+                conf_note = "Only playmaker on this team. Teammates are not a second receiving bet."
+                verb = "COMPARE"
+                action = "LEAN"
+                instruction = (
+                    f"{player} is the only playmaker. Model {mu:.0f} recv yds. "
+                    f"TAKE Over if the line is <= {over_line:.0f}. "
+                    f"Do not bet a teammate as a second playmaker."
+                )
+                plays.append(_prop_row(p, player, label, mu, sigma, roll, edge, over_line, under_line, quality, action, verb, instruction, conf_note, gate, market))
+                continue
+            if p.get("lean") == "under":
+                season = _f(p.get("season_ypg"))
+                quality = "GOOD"
+                conf_note = "Targets fell off. The season yardage rate is not the projection."
+                verb = "UNDER"
+                action = "LEAN"
+                instruction = (
+                    f"UNDER {player} recv yds. Model {mu:.0f} after the target drop"
+                    f"{f' (season rate {season:.0f})' if season else ''}. Not a playmaker."
+                )
+                plays.append(_prop_row(p, player, label, mu, sigma, roll, edge, over_line, under_line, quality, action, verb, instruction, conf_note, gate, market))
+                continue
             if roll < 35:
                 continue
             quality = "GOOD" if abs_edge >= recv_min else "WATCH"
@@ -435,34 +496,7 @@ def _prop_plays(props: list[dict], weights: dict) -> list[dict]:
             )
 
         plays.append(
-            {
-                "player": player,
-                "team": p.get("team"),
-                "opponent": p.get("opponent"),
-                "game_id": p.get("game_id"),
-                "market": market,
-                "market_label": label,
-                "mu": mu,
-                "sigma": round(sigma, 1),
-                "roll": roll,
-                "edge_vs_roll": edge,
-                "over_if_line_at_or_below": over_line,
-                "under_if_line_at_or_above": under_line,
-                "quality": quality,
-                "action": action,
-                "verb": verb,
-                "instruction": instruction,
-                "why": conf_note,
-                "stake": "0.5u" if action == "BET" else ("0.25u" if action == "LEAN" else "0u"),
-                "rank_score": round(
-                    (3.0 if market == "player_pass_yds" else (2.2 if market == "player_reception_yds" else 1.0))
-                    + min(roll, 300) / 100.0
-                    + abs_edge / 12.0
-                    + (1.0 if abs_edge >= gate else 0.0)
-                    - _f(p.get("priority"), 2) * 0.05,
-                    4,
-                ),
-            }
+            _prop_row(p, player, label, mu, sigma, roll, edge, over_line, under_line, quality, action, verb, instruction, conf_note, gate, market)
         )
 
     plays.sort(key=lambda x: -_f(x.get("rank_score")))
@@ -473,10 +507,16 @@ def _prop_plays(props: list[dict], weights: dict) -> list[dict]:
         "player_rush_yds": [],
     }
     seen: set[str] = set()
+    playmaker_teams: set[str] = set()
     for p in plays:
         key = f"{p['player']}:{p['market']}"
         if key in seen:
             continue
+        if p["market"] == "player_reception_yds" and p.get("verb") != "UNDER":
+            team = str(p.get("team") or "")
+            if team in playmaker_teams:
+                continue
+            playmaker_teams.add(team)
         seen.add(key)
         m = p["market"]
         if m in by_mkt and len(by_mkt[m]) < 6:
@@ -965,7 +1005,7 @@ def build_advice(
         how_to = (
             "1) Place TAKE singles first (ML/spread). "
             "2) Full-game totals only if listed below. "
-            "3) Player props: pass yds first, then recv, rush last; compare DK line to model. "
+            "3) Player props: pass yds first, then one receiver playmaker per team, rush last. "
             "4) SKIP all 1H/2H / half markets. "
             "5) Same-game parlay only (Robinhood). Never cross games. Small stake after singles."
         )

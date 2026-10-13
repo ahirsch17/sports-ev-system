@@ -187,6 +187,7 @@ def predict_cmd(
         weights,
         deep_features=deep,
         situational_features=sit,
+        player_stats=player_stats,
     )
     preds_week = preds_all.filter((pl.col("season") == season) & (pl.col("week") == week))
 

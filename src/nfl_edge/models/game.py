@@ -42,6 +42,7 @@ def predict_slate(
     use_situational: bool = True,
     use_weather: bool = True,
     use_form: bool = True,
+    player_stats: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
     weights = weights or load_weights()
     matchups = build_matchup_frame(
@@ -56,6 +57,7 @@ def predict_slate(
         use_situational=use_situational,
         use_weather=use_weather,
         use_form=use_form,
+        player_stats=player_stats,
     )
     sigma = float(weights.get("margin_sigma", 13.5))
 
@@ -80,6 +82,12 @@ def predict_slate(
                 "pred_away_pass_yds",
                 "pred_home_rush_yds",
                 "pred_away_rush_yds",
+                "home_pass_index",
+                "away_pass_index",
+                "home_te_mult",
+                "away_te_mult",
+                "home_script_note",
+                "away_script_note",
                 "home_score",
                 "away_score",
                 "deep_net_margin_adj",

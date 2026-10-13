@@ -129,10 +129,31 @@ def attach_pass_rush_splits(team_games: pl.DataFrame, team_stats: pl.DataFrame) 
         stats = stats.rename(renames)
     if team_col != "team":
         stats = stats.rename({team_col: "team"})
+    stats = stats.unique(subset=["season", "week", "team"], keep="first")
+
+    # Yards the opponent gained that week are the yards this defense allowed.
+    if "opp" in team_games.columns and "pass_yards" in stats.columns:
+        opp_cols = [
+            "season",
+            "week",
+            pl.col("team").alias("opp"),
+            pl.col("pass_yards").alias("pass_allowed"),
+        ]
+        if "rush_yards" in stats.columns:
+            opp_cols.append(pl.col("rush_yards").alias("rush_allowed"))
+        faced = (
+            team_games.select(["season", "week", "team", "opp"])
+            .unique(subset=["season", "week", "team"], keep="first")
+            .join(stats.select(opp_cols), on=["season", "week", "opp"], how="left")
+        )
+        keep_faced = ["season", "week", "team", "pass_allowed"]
+        if "rush_allowed" in faced.columns:
+            keep_faced.append("rush_allowed")
+        stats = stats.join(faced.select(keep_faced), on=["season", "week", "team"], how="left")
 
     # prior rolling for pass/rush
     stats = stats.sort(["team", "season", "week"])
-    for col in ["pass_yards", "rush_yards", "pass_epa", "rush_epa"]:
+    for col in ["pass_yards", "rush_yards", "pass_epa", "rush_epa", "pass_allowed", "rush_allowed"]:
         if col in stats.columns:
             stats = stats.with_columns(
                 pl.col(col).shift(1).rolling_mean(window_size=6, min_samples=2).over("team").alias(f"roll_{col}"),

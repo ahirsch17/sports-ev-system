@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from nfl_edge.models.props import is_extra_playmaker, listed_receiving
 from nfl_edge.odds_math import implied_to_american
 
 
@@ -115,14 +116,19 @@ def _balanced_props(props: list[dict], *, limit: int = 10) -> list[dict]:
     for rows in by_team.values():
         take(rows, "player_pass_yds", 1)
     for rows in by_team.values():
-        take(rows, "player_reception_yds", 2)
+        for p in listed_receiving(rows):
+            key = (p.get("player"), p.get("market"))
+            if key in seen:
+                continue
+            seen.add(key)
+            picked.append(p)
     for rows in by_team.values():
         take(rows, "player_rush_yds", 1)
     for p in sorted(props, key=lambda x: _f(x.get("mu")), reverse=True):
         if len(picked) >= limit:
             break
         key = (p.get("player"), p.get("market"))
-        if key in seen:
+        if key in seen or is_extra_playmaker(p, picked):
             continue
         seen.add(key)
         picked.append(p)
@@ -314,6 +320,8 @@ def build_game_board(
                         "under_if_line_at_or_above": p.get("under_if_line_at_or_above")
                         if p.get("under_if_line_at_or_above") is not None
                         else round(mu + buffer, 1),
+                        "role": p.get("role"),
+                        "lean": p.get("lean"),
                     }
                 )
         props = _balanced_props(merged, limit=10)
@@ -402,6 +410,11 @@ def build_game_board(
                     "home": g.get("home_inj_note"),
                     "away": g.get("away_inj_note"),
                 },
+                "plan": " ".join(
+                    str(note)
+                    for note in (g.get("home_script_note"), g.get("away_script_note"))
+                    if note
+                ),
                 "winner": {
                     "pick": favorite,
                     "is_home": favorite == home,

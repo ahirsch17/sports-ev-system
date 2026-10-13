@@ -14,6 +14,7 @@ from nfl_edge.features.injuries import build_injury_features
 from nfl_edge.features.ratings import build_team_game_log
 from nfl_edge.features.situational import build_situational_features
 from nfl_edge.features.weather import load_weights
+from nfl_edge.models.props import is_extra_playmaker, listed_receiving
 from nfl_edge.ingest.nflverse import (
     data_as_of,
     load_depth_charts,
@@ -110,21 +111,26 @@ def _balanced_game_props(props: list[dict], *, limit: int = 10) -> list[dict]:
             seen.add(key)
             picked.append(p)
 
-    # Pass (1 each), recv (2 each), rush (1 each)
+    # Pass (1 each), one receiver playmaker plus any target-drop under, rush (1 each)
     for team_props in by_team.values():
         _take(team_props, "player_pass_yds", 1)
     for team_props in by_team.values():
-        _take(team_props, "player_reception_yds", 2)
+        for p in listed_receiving(team_props):
+            key = (p.get("player"), p.get("market"))
+            if key in seen:
+                continue
+            seen.add(key)
+            picked.append(p)
     for team_props in by_team.values():
         _take(team_props, "player_rush_yds", 1)
 
-    # Fill remainder by mu if under limit
+    # Fill remainder by mu if under limit. Do not add a second playmaker.
     rest = sorted(props, key=lambda p: float(p.get("mu") or 0), reverse=True)
     for p in rest:
         if len(picked) >= limit:
             break
         key = (p.get("player"), p.get("market"))
-        if key in seen:
+        if key in seen or is_extra_playmaker(p, picked):
             continue
         seen.add(key)
         picked.append(p)
@@ -188,6 +194,7 @@ def model_week(
         weights,
         deep_features=deep,
         situational_features=sit,
+        player_stats=player_stats,
     )
     week_ids = week_sched["game_id"].to_list()
     preds = preds_all.filter(
@@ -340,6 +347,13 @@ def _nfl_factor_breakdown(
         qb_bits.append("away QB flagged")
     if qb_bits:
         inj_effect += f"; {', '.join(qb_bits)}"
+    plan = " ".join(
+        str(note)
+        for note in (pred.get("home_script_note"), pred.get("away_script_note"))
+        if note
+    )
+    if plan:
+        inj_effect += f". Plan: {plan}"
     sit_effect = (
         f"{sit.get('rest_note') or 'rest n/a'}; {sit.get('div_note') or 'div n/a'}; "
         f"pace {sit.get('home_pace_note') or 'n/a'} vs {sit.get('away_pace_note') or 'n/a'} "

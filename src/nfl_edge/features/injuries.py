@@ -260,6 +260,8 @@ def team_injury_impact(
         "rush_yards_pct": 0.0,
         "qb_out": 0.0,
         "qb_note": "",
+        "catchers_out": 0.0,
+        "catchers_n": 0,
     }
 
     if injuries.is_empty():
@@ -360,9 +362,13 @@ def team_injury_impact(
                     prev = str(impact.get("qb2_note") or "")
                     bit = f"{nm} {'OUT/DNP' if sev >= 0.75 else 'questionable'}"
                     impact["qb2_note"] = f"{prev}; {bit}" if prev else bit
-        elif pos.startswith("WR"):
-            impact["points"] = float(impact["points"]) + float(w["wr1_out_points"]) * sev * (1.0 if depth == 1 else 0.4)
-            impact["pass_yards_pct"] = float(impact["pass_yards_pct"]) - 0.05 * sev * (1.0 if depth == 1 else 0.3)
+        elif pos.startswith("WR") or pos == "TE" or pos.startswith("TE"):
+            wr_scale = 1.0 if pos.startswith("WR") else 0.7
+            impact["points"] = float(impact["points"]) + float(w["wr1_out_points"]) * wr_scale * sev * (1.0 if depth == 1 else 0.4)
+            impact["pass_yards_pct"] = float(impact["pass_yards_pct"]) - (0.05 if pos.startswith("WR") else 0.04) * sev * (1.0 if depth == 1 else 0.3)
+            if sev >= 0.6 and depth <= 2:
+                impact["catchers_n"] = int(impact["catchers_n"]) + 1
+                impact["catchers_out"] = float(impact["catchers_out"]) + (1.0 if depth <= 1 else 0.7)
         elif pos in {"RB", "HB", "FB"} or pos.startswith("RB"):
             impact["points"] = float(impact["points"]) + float(w["rb1_out_points"]) * sev * (1.0 if depth == 1 else 0.3)
             impact["rush_yards_pct"] = float(impact["rush_yards_pct"]) - 0.08 * sev * (1.0 if depth == 1 else 0.3)
@@ -422,6 +428,10 @@ def build_injury_features(
                 "away_inj_rush_pct": away["rush_yards_pct"],
                 "home_qb_out": home["qb_out"],
                 "away_qb_out": away["qb_out"],
+                "home_catchers_out": home["catchers_out"],
+                "away_catchers_out": away["catchers_out"],
+                "home_catchers_n": home["catchers_n"],
+                "away_catchers_n": away["catchers_n"],
                 "home_inj_note": _inj_note(r["home_team"], home),
                 "away_inj_note": _inj_note(r["away_team"], away),
             }
@@ -441,6 +451,10 @@ def _inj_note(team: str, impact: dict) -> str:
         bits.append(qb_note or "QB Questionable")
     if qb2_note:
         bits.append(qb2_note)
+    catchers_n = int(impact.get("catchers_n") or 0)
+    if catchers_n:
+        label = "pass catcher" if catchers_n == 1 else "pass catchers"
+        bits.append(f"{catchers_n} {label} out")
     pts = float(impact.get("points") or 0)
     if pts <= -2.5:
         bits.append(f"skill/OL hit ({pts:+.1f} pts)")

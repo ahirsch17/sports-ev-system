@@ -178,11 +178,16 @@ function renderProps(props, gameId) {
             const over = p.over_if_line_at_or_below ?? "";
             const under = p.under_if_line_at_or_above ?? "";
             const team = p.team ? `<span class="muted"> ${clean(p.team)}</span>` : "";
+            const play = p.verb === "UNDER" || p.lean === "under"
+              ? `UNDER if the line is ≥${under}`
+              : p.lean === "featured"
+              ? `Only playmaker. Over if the line is ≤${over}`
+              : `Over ≤${over} · Under ≥${under}`;
             return `<tr>
               <td>${clean(p.player)}${team}</td>
               <td>${clean(p.market_label || p.market)}</td>
               <td class="num">${p.mu ?? "—"}</td>
-              <td class="tip-cell">Over ≤${over} · Under ≥${under}</td>
+              <td class="tip-cell">${play}</td>
               <td>${logBtn("prop", gameId, i)}</td>
             </tr>`;
           })
@@ -241,6 +246,7 @@ function renderBoard(board) {
           </div>
         </header>
         <p class="gc-instruction">${clean(c.instruction || c.detail || "No clear side.")}</p>
+        ${c.plan ? `<p class="gc-plan">${clean(c.plan)}</p>` : ""}
         ${renderMarketRows(c)}
         <div class="gc-block">
           <div class="mini-label">Player props</div>
