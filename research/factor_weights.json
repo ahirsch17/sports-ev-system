@@ -108,6 +108,13 @@
     "dog_qb_out_boost": true,
     "notes": "Walk-forward 2022-2025 (n=1087): |margin|>=7 gated ~73.9% (n=218); |margin|>=5 ~72%; skip fav QB-out ~74%; dog QB-out slice ~83% (n~42, small). ATS ~50% so prefer ML winners over spreads. Elo blend 0.62, deep 0.30, sit 0.45."
   },
+  "detail": {
+    "field_weight": 0.5,
+    "momentum_weight": 0.0,
+    "qb_sim_weight": 0.0,
+    "coverage_weight": 0.0,
+    "notes": "Walk-forward on the raw points+Elo margin, 2022-2024 fit (813 games) and 2025-2026 holdout (378). Field is the home team's home-minus-road margin, shrunk toward that stadium and then the league 2-point home edge, added at half weight after the Elo blend. Holdout winners +1.6pp and margin MAE -0.13; fit winners +0.25pp and MAE flat. Residual momentum (last 3 minus last 8) cut fit winners. QB versus similar pass defenses correlated about -0.02 with the margin residual. Coverage versus the secondaries an offense has already seen did not move pass share (50% directional) and re-counted the defensive rating when added to the score, so those three stay at zero."
+  },
   "market_blend": {
     "model_weight": 0.1,
     "seasons": [

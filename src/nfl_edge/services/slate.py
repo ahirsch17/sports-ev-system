@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from typing import Any
 
 import polars as pl
@@ -38,28 +37,52 @@ def resolve_week(season: int | None = None, week: int | None = None) -> tuple[in
     return season, week
 
 
-def _kickoff_utc(gameday: Any, gametime: Any) -> datetime | None:
-    """nflverse lists kickoff as an Eastern date + HH:MM."""
-    try:
-        from zoneinfo import ZoneInfo
+def _hold_if_player_stats_missing(season: int) -> dict[str, Any] | None:
+    """Do not calculate a week whose finished games have no player lines."""
+    from nfl_edge.ingest.late_boxscores import finals_missing
 
-        local = datetime.strptime(f"{gameday} {gametime or '13:00'}", "%Y-%m-%d %H:%M")
-        return local.replace(tzinfo=ZoneInfo("America/New_York")).astimezone(timezone.utc)
-    except Exception:
+    stats = load_player_stats([season])
+    schedules = load_schedules([season])
+    missing = finals_missing(stats, schedules)
+    if not missing:
         return None
+    names = ", ".join(f"{row['away_team']} at {row['home_team']}" for row in missing[:8])
+    extra = len(missing) - 8
+    if extra > 0:
+        names = f"{names}, and {extra} more"
+    return {
+        "season": season,
+        "week": None,
+        "games": [],
+        "edges": [],
+        "parlays": [],
+        "props": [],
+        "matchup_parlays": [],
+        "data": {
+            "nflverse_as_of": data_as_of(season),
+            "player_stats": {
+                "ready": False,
+                "missing": missing,
+                "reason": (
+                    f"Finished games still have no player stats: {names}. "
+                    "The weekly file did not have them, and the ESPN box score did not fill them, "
+                    "so this week was not calculated."
+                ),
+            },
+        },
+    }
 
 
 def upcoming_games(sched: pl.DataFrame) -> pl.DataFrame:
-    """Games with no final score that haven't started yet (in-progress games can't be bet pregame)."""
-    pending = sched.filter(pl.col("home_score").is_null())
-    if pending.is_empty() or "gameday" not in pending.columns:
-        return pending
-    now = datetime.now(timezone.utc)
-    keep = []
-    for r in pending.iter_rows(named=True):
-        kick = _kickoff_utc(r.get("gameday"), r.get("gametime"))
-        keep.append(kick is None or kick > now)
-    return pending.filter(pl.Series(keep))
+    """Games that are not final yet.
+
+    A kickoff that already passed stays on the board until a final score is posted.
+    The early window is still bettable for the first few minutes, and the feed often
+    has no live score yet. Thursday finals drop off because both scores are filled in.
+    """
+    if sched.is_empty() or "home_score" not in sched.columns:
+        return sched
+    return sched.filter(pl.col("home_score").is_null())
 
 
 def market_lines(week_sched: pl.DataFrame, *, force_odds: bool = False) -> tuple[list[dict], dict[str, Any]]:
@@ -175,8 +198,13 @@ def model_week(
 
     team_stats = load_team_stats(hist_seasons)
     player_stats = load_player_stats(hist_seasons)
-    injuries = load_injuries([season])
+    from nfl_edge.ingest.espn_injuries import bind_live_rows_to_depth, supplement_unpublished_week
+
     depth = load_depth_charts([season])
+    injuries = bind_live_rows_to_depth(
+        supplement_unpublished_week(load_injuries([season]), season, week),
+        depth,
+    )
     inj_feat = build_injury_features(week_sched, injuries, depth, weights, player_stats=player_stats)
     team_games = build_team_game_log(schedules_hist)
     deep = build_deep_matchup_features(
@@ -223,6 +251,9 @@ def build_nfl_slate(
     """Return predictions, deep matchups, props, edges, parlays for a week."""
     ensure_dirs()
     season, week = resolve_week(season, week)
+    held = _hold_if_player_stats_missing(season)
+    if held is not None:
+        return held
     weights = load_weights()
     hist_seasons = list(range(max(2006, season - 3), season + 1))
     schedules_hist = load_schedules(hist_seasons)
@@ -242,7 +273,15 @@ def build_nfl_slate(
 
     week_sched, preds = wm.week_sched, wm.preds
     inj_feat, deep, sit = wm.inj_feat, wm.deep, wm.sit
-    props = project_slate_props(preds, wm.player_stats, depth_charts=wm.depth, injuries=wm.injuries)
+    from nfl_edge.ingest.espn_injuries import live_outs_for_week
+
+    props = project_slate_props(
+        preds,
+        wm.player_stats,
+        depth_charts=wm.depth,
+        injuries=wm.injuries,
+        live_outs=live_outs_for_week(wm.injuries, season, week),
+    )
 
     odds_rows, odds_info = market_lines(week_sched, force_odds=force_odds)
     data_info.update(odds_info)
@@ -268,8 +307,11 @@ def build_nfl_slate(
         for p in props.iter_rows(named=True):
             props_by_game.setdefault(str(p["game_id"]), []).append(p)
 
+    sched_by_id = {r["game_id"]: r for r in week_sched.iter_rows(named=True)} if not week_sched.is_empty() else {}
+
     for r in preds.iter_rows(named=True):
         d = deep_by_id.get(r["game_id"], {})
+        posted = sched_by_id.get(r["game_id"], {})
         inj = inj_by_id.get(r["game_id"], {})
         srow = sit_by_id.get(r["game_id"], {})
         games.append(
@@ -296,16 +338,31 @@ def build_nfl_slate(
                 "near_miss_margin_adj": srow.get("near_miss_margin_adj"),
                 "home_pace_note": srow.get("home_pace_note"),
                 "away_pace_note": srow.get("away_pace_note"),
+                "spread_line": posted.get("spread_line"),
+                "total_line": posted.get("total_line"),
+                "stadium": posted.get("stadium"),
+                "location": posted.get("location"),
+                "gametime": posted.get("gametime"),
                 "player_props": _balanced_game_props(props_by_game.get(str(r["game_id"]), []), limit=10),
+                "yard_sheet": props_by_game.get(str(r["game_id"]), []),
                 "factor_breakdown": _nfl_factor_breakdown(r, d, weights, inj, srow),
             }
         )
 
+    from nfl_edge.models.matchup_parlays import build_matchup_parlays
+
+    matchup_parlays = build_matchup_parlays(
+        games,
+        wm.player_stats,
+        wm.depth,
+        wm.injuries,
+    )
     return {
         "sport": "NFL",
         "season": season,
         "week": week,
         "games": games,
+        "matchup_parlays": matchup_parlays,
         "props": props.to_dicts() if not props.is_empty() else [],
         "edges": edges.to_dicts() if not edges.is_empty() else [],
         "parlays": parlays,

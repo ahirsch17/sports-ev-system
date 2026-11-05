@@ -95,7 +95,10 @@ def load_schedules(
 def load_team_stats(seasons: Sequence[int] | None = None, *, force: bool = False) -> pl.DataFrame:
     import nflreadpy as nfl
 
-    return _load_cached("team_stats", _season_list(seasons), lambda ss: nfl.load_team_stats(seasons=ss), force=force)
+    from nfl_edge.ingest.late_boxscores import apply_team_boxscores
+
+    frame = _load_cached("team_stats", _season_list(seasons), lambda ss: nfl.load_team_stats(seasons=ss), force=force)
+    return apply_team_boxscores(frame)
 
 
 def load_player_stats(seasons: Sequence[int] | None = None, *, force: bool = False) -> pl.DataFrame:
@@ -107,7 +110,10 @@ def load_player_stats(seasons: Sequence[int] | None = None, *, force: bool = Fal
         except TypeError:
             return nfl.load_player_stats(seasons=ss)
 
-    return _load_cached("player_stats", _season_list(seasons), loader, force=force)
+    from nfl_edge.ingest.late_boxscores import apply_player_boxscores
+
+    frame = _load_cached("player_stats", _season_list(seasons), loader, force=force)
+    return apply_player_boxscores(frame)
 
 
 def load_injuries(seasons: Sequence[int] | None = None, *, force: bool = False) -> pl.DataFrame:

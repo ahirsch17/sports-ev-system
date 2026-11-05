@@ -88,6 +88,15 @@ def _local_date(kickoff: datetime) -> date:
     return kickoff.astimezone(_EASTERN).date()
 
 
+def _raw_margins(preds) -> dict[str, float]:
+    col = "model_margin" if "model_margin" in preds.columns else "pred_margin"
+    return {
+        str(r["game_id"]): float(r[col])
+        for r in preds.iter_rows(named=True)
+        if r.get(col) is not None
+    }
+
+
 @dataclass
 class NflEdgeMarginPredictor:
     """Look up nfl_edge's predicted home margin for a sports_ev Game.
@@ -136,15 +145,9 @@ class NflEdgeMarginPredictor:
             from nfl_edge.services.slate import model_week
 
             wm = model_week(season, week, upcoming_only=self.upcoming_only)
-            self._margins[key] = (
-                {}
-                if wm is None
-                else {
-                    str(r["game_id"]): float(r["pred_margin"])
-                    for r in wm.preds.iter_rows(named=True)
-                    if r.get("pred_margin") is not None
-                }
-            )
+            # Raw model margin. The published pred_margin is already tilted
+            # toward the posted line; blending that again would wipe the tilt.
+            self._margins[key] = {} if wm is None else _raw_margins(wm.preds)
         return self._margins[key]
 
     def __call__(self, game: Game) -> float | None:

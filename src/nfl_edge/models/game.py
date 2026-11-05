@@ -29,6 +29,47 @@ class GamePrediction:
     pred_away_rush_yds: float
 
 
+def anchor_forecast(matchups: pl.DataFrame, weights: dict | None = None) -> pl.DataFrame:
+    """Publish a forecast that starts from the posted line and tilts toward the model.
+
+    Walk-forward fit (2019-2025) puts the useful model weight near 0.10-0.15.
+    On the 2026 slate the raw margin was 58.5% straight up versus 64.2% for the
+    closing line, and it was right on only 7 of the 20 games where the two
+    disagreed. `model_margin` / `model_total` stay raw so the Pinnacle blend
+    in the betting bridge is not applied twice.
+    """
+    weights = weights or {}
+    if "pred_margin" not in matchups.columns or "pred_total" not in matchups.columns:
+        return matchups
+    w = float((weights.get("market_blend") or {}).get("model_weight", 0.15))
+    w = min(max(w, 0.0), 1.0)
+    out = matchups.with_columns(
+        pl.col("pred_margin").alias("model_margin"),
+        pl.col("pred_total").alias("model_total"),
+    )
+    margin = pl.col("model_margin")
+    total = pl.col("model_total")
+    if "spread_line" in out.columns:
+        margin = (
+            pl.when(pl.col("spread_line").is_not_null())
+            .then(w * pl.col("model_margin") + (1.0 - w) * pl.col("spread_line"))
+            .otherwise(pl.col("model_margin"))
+        )
+    if "total_line" in out.columns:
+        total = (
+            pl.when(pl.col("total_line").is_not_null())
+            .then(w * pl.col("model_total") + (1.0 - w) * pl.col("total_line"))
+            .otherwise(pl.col("model_total"))
+        )
+    return out.with_columns(
+        margin.round(2).alias("pred_margin"),
+        total.round(2).alias("pred_total"),
+    ).with_columns(
+        ((pl.col("pred_total") + pl.col("pred_margin")) / 2.0).round(2).alias("pred_home_points"),
+        ((pl.col("pred_total") - pl.col("pred_margin")) / 2.0).round(2).alias("pred_away_points"),
+    )
+
+
 def predict_slate(
     schedules: pl.DataFrame,
     team_stats: pl.DataFrame | None = None,
@@ -45,19 +86,22 @@ def predict_slate(
     player_stats: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
     weights = weights or load_weights()
-    matchups = build_matchup_frame(
-        schedules,
-        team_stats,
-        injury_features,
+    matchups = anchor_forecast(
+        build_matchup_frame(
+            schedules,
+            team_stats,
+            injury_features,
+            weights,
+            deep_features=deep_features,
+            situational_features=situational_features,
+            use_injuries=use_injuries,
+            use_deep=use_deep,
+            use_situational=use_situational,
+            use_weather=use_weather,
+            use_form=use_form,
+            player_stats=player_stats,
+        ),
         weights,
-        deep_features=deep_features,
-        situational_features=situational_features,
-        use_injuries=use_injuries,
-        use_deep=use_deep,
-        use_situational=use_situational,
-        use_weather=use_weather,
-        use_form=use_form,
-        player_stats=player_stats,
     )
     sigma = float(weights.get("margin_sigma", 13.5))
 
@@ -74,6 +118,8 @@ def predict_slate(
                 "roof",
                 "temp",
                 "wind",
+                "model_margin",
+                "model_total",
                 "pred_margin",
                 "pred_total",
                 "pred_home_points",

@@ -303,6 +303,192 @@ def _depth_starters(
     return out
 
 
+def _allocate(weights: dict[str, float], pool: float) -> dict[str, float]:
+    """Split one team total across the players who actually get those yards."""
+    clean = {name: float(yards) for name, yards in weights.items() if yards and float(yards) > 0}
+    total = sum(clean.values())
+    if total <= 0 or pool <= 0:
+        return {}
+    return {name: pool * yards / total for name, yards in clean.items()}
+
+
+def _split_sentence(pool: float, yards: dict[str, float], label: str, rest_label: str) -> str:
+    """Name the pieces that are big enough to see, and keep the integers adding up."""
+    named = sorted(((name, yards) for name, yards in yards.items() if yards >= 20), key=lambda item: -item[1])[:6]
+    if not named:
+        return ""
+    def _whole(value: float) -> int:
+        return int(float(f"{round(float(value), 1):.0f}"))
+
+    shown = [(name, _whole(yards)) for name, yards in named]
+    rest = _whole(pool) - sum(yards for _, yards in shown)
+    parts = [f"{name} {yds}" for name, yds in shown]
+    if rest >= 8:
+        parts.append(f"{rest} to {rest_label}")
+    elif parts and rest:
+        name, yds = shown[-1]
+        parts[-1] = f"{name} {yds + rest}"
+    body = parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + ", and " + parts[-1]
+    return f"The {round(pool)} {label} are {body}."
+
+
+def _recent_team_yards(
+    stats: pl.DataFrame | None,
+    team: str,
+    season: int,
+    week: int,
+    n: int = 6,
+) -> dict[str, dict]:
+    """Yards per player over the team's last n games. This is the share, not a per-player average."""
+    if stats is None or stats.is_empty():
+        return {}
+    if not {"season", "week", "team", "player_display_name"}.issubset(stats.columns):
+        return {}
+    df = stats.filter(
+        (pl.col("team") == team)
+        & ((pl.col("season") < season) | ((pl.col("season") == season) & (pl.col("week") < week)))
+    )
+    if "season_type" in df.columns:
+        df = df.filter(pl.col("season_type") == "REG")
+    if df.is_empty():
+        return {}
+    weeks = df.select(["season", "week"]).unique().sort(["season", "week"]).tail(n)
+    df = df.join(weeks, on=["season", "week"])
+    room: dict[str, dict] = {}
+    for row in df.iter_rows(named=True):
+        name = str(row.get("player_display_name") or "")
+        if not name:
+            continue
+        slot = room.setdefault(name, {"recv": 0.0, "rush": 0.0, "pos": str(row.get("position") or "")})
+        slot["recv"] += float(row.get("receiving_yards") or 0)
+        slot["rush"] += float(row.get("rushing_yards") or 0)
+        if row.get("position"):
+            slot["pos"] = str(row["position"])
+    return room
+
+
+def _returning_rb1(
+    depth: pl.DataFrame | None,
+    injuries: pl.DataFrame | None,
+    stats: pl.DataFrame | None,
+    team: str,
+    season: int,
+    week: int,
+    out_players: set[str],
+) -> str | None:
+    """Depth-chart RB1 who was out recently, is active now, and has barely played.
+
+    The carries in that window belong to the fill-in. He has kept about half
+    of them on the returns since 2023, so half of that work goes back to the starter.
+    """
+    if (
+        depth is None
+        or depth.is_empty()
+        or injuries is None
+        or injuries.is_empty()
+        or "full_name" not in depth.columns
+        or "full_name" not in injuries.columns
+        or "report_status" not in injuries.columns
+    ):
+        return None
+    rbs = depth.filter(
+        (pl.col("team") == team)
+        & pl.col("position").cast(pl.Utf8).str.to_uppercase().str.starts_with("RB")
+        & (pl.col("depth_team") == 1)
+    )
+    if rbs.is_empty():
+        return None
+    name = str(rbs["full_name"][0] or "")
+    if not name or name.lower() in out_players:
+        return None
+    recent_out = injuries.filter(
+        (pl.col("season") == season)
+        & (pl.col("team") == team)
+        & (pl.col("week") < week)
+        & (pl.col("week") >= week - 4)
+        & (pl.col("full_name").str.to_lowercase() == name.lower())
+        & pl.col("report_status").is_in(["Out", "Doubtful"])
+    )
+    if recent_out.height < 2:
+        return None
+    if stats is None or stats.is_empty() or "carries" not in stats.columns or "player_display_name" not in stats.columns:
+        return None
+    played = stats.filter(
+        (pl.col("season") == season)
+        & (pl.col("week") < week)
+        & (pl.col("team") == team)
+        & (pl.col("player_display_name").str.to_lowercase() == name.lower())
+        & (pl.col("carries") > 0)
+    )
+    if "season_type" in played.columns:
+        played = played.filter(pl.col("season_type") == "REG")
+    if played.height >= 2:
+        return None
+    return name
+
+
+def _roster_names(depth_charts: pl.DataFrame | None, team: str) -> dict[str, int]:
+    names = _depth_starters(depth_charts, team, positions={"QB"}, max_depth=2)
+    names.update(
+        _depth_starters(depth_charts, team, positions={"RB", "HB", "FB", "WR", "TE"}, max_depth=6)
+    )
+    return names
+
+
+def _on_roster(yards: dict[str, float], roster: dict[str, int]) -> dict[str, float]:
+    if not roster or not yards:
+        return yards
+    kept = {name: value for name, value in yards.items() if _name_in_depth(name, roster) is not None}
+    if sum(kept.values()) < 0.5 * sum(yards.values()):
+        return yards
+    return kept
+
+
+def _one_game_pass_roll(
+    player_stats: pl.DataFrame | None,
+    team: str,
+    display_name: str,
+    season: int,
+) -> pl.DataFrame | None:
+    """A starter with one game has no rolling mean. Use the yards from that game."""
+    if player_stats is None or player_stats.is_empty() or "passing_yards" not in player_stats.columns:
+        return None
+    last = display_name.split()[-1].lower()
+    if not last:
+        return None
+    df = player_stats.filter(pl.col("team") == team)
+    if "season" in df.columns:
+        df = df.filter(pl.col("season") >= season - 1)
+    hit = pl.lit(False)
+    for column in ("player_display_name", "player_name"):
+        if column in df.columns:
+            hit = hit | pl.col(column).fill_null("").str.to_lowercase().str.contains(last, literal=True)
+    df = df.filter(hit & pl.col("passing_yards").is_not_null())
+    if "attempts" in df.columns:
+        df = df.filter(pl.col("attempts").fill_null(0) >= 8)
+    if df.is_empty():
+        return None
+    yards = [float(value) for value in df["passing_yards"].to_list()]
+    return pl.DataFrame(
+        {
+            "player_name": [display_name],
+            "position": ["QB"],
+            "roll_pass": [sum(yards) / len(yards)],
+            "roll_pass_std": [None],
+        }
+    )
+
+
+def _is_out(name: str, out_l: set[str]) -> bool:
+    return str(name or "").strip().lower() in out_l
+
+
+def _next_qb_rank(qb_depth: dict[str, int], out_l: set[str]) -> int | None:
+    """Depth rank of the first quarterback who is not out or doubtful."""
+    ranks = [rank for name, rank in qb_depth.items() if not _is_out(name, out_l)]
+    return min(ranks) if ranks else None
+
+
 def _name_in_depth(player: str, depth: dict[str, int]) -> int | None:
     if not depth:
         return None
@@ -317,15 +503,81 @@ def _name_in_depth(player: str, depth: dict[str, int]) -> int | None:
     return None
 
 
+def blend_pass_yards(roll: float, defense_allowed: float | None, team_pace: float) -> float:
+    """One passing total for the quarterback and the receivers.
+
+    The pace number and the defense's recent total are not two bets.
+    40% recent quarterback, 45% what this defense has allowed, 15% pace.
+    """
+    pace = float(team_pace) * 0.92
+    if defense_allowed is not None and roll == roll:
+        return 0.40 * float(roll) + 0.45 * float(defense_allowed) + 0.15 * pace
+    if roll == roll:
+        return 0.65 * float(roll) + 0.35 * pace
+    return pace
+
+
+def defense_shape_rooms(
+    pass_yards: float,
+    wr: float,
+    te: float,
+    rb_rec: float,
+) -> dict[str, float]:
+    """Split one passing total the way this defense has actually given up yards."""
+    total = float(wr) + float(te) + float(rb_rec)
+    if total <= 0:
+        return {"WR": float(pass_yards), "TE": 0.0, "RB": 0.0}
+    py = float(pass_yards)
+    return {"WR": py * wr / total, "TE": py * te / total, "RB": py * rb_rec / total}
+
+
+def pass_yards_allowed_by_defense(
+    player_stats: pl.DataFrame | None,
+    season: int,
+    week: int,
+) -> dict[str, float]:
+    """Mean passing yards allowed by each defense before this week.
+
+    A missing receiver does not belong in this number. His targets move to
+    someone else. The quarterback's yards stay with the quarterback.
+    """
+    need = {"season", "week", "opponent_team", "passing_yards", "attempts", "position"}
+    if player_stats is None or player_stats.is_empty() or not need.issubset(set(player_stats.columns)):
+        return {}
+    qbs = player_stats.filter(
+        (pl.col("position") == "QB")
+        & (pl.col("attempts") >= 12)
+        & (pl.col("season") >= season - 1)
+        & ((pl.col("season") < season) | ((pl.col("season") == season) & (pl.col("week") < week)))
+    )
+    if "season_type" in qbs.columns:
+        qbs = qbs.filter(pl.col("season_type") == "REG")
+    if qbs.is_empty():
+        return {}
+    grouped = qbs.group_by("opponent_team").agg(
+        pl.col("passing_yards").mean().alias("yds"),
+        pl.len().alias("n"),
+    )
+    return {
+        str(r["opponent_team"]): float(r["yds"])
+        for r in grouped.iter_rows(named=True)
+        if r["n"] >= 3 and r["yds"] is not None
+    }
+
+
 def project_props_for_game(
     *,
     game_row: dict,
     player_rolls: pl.DataFrame,
     depth_charts: pl.DataFrame | None = None,
     out_players: set[str] | None = None,
+    opp_pass_allowed: dict[str, float] | None = None,
     top_n_pass: int = 1,
     top_n_rush: int = 3,
     top_n_recv: int = 3,
+    player_stats: pl.DataFrame | None = None,
+    injuries: pl.DataFrame | None = None,
+    defense_cuts: dict[str, dict] | None = None,
 ) -> list[dict]:
     """
     Build prop projections for a single game using rolling player means,
@@ -378,18 +630,26 @@ def project_props_for_game(
         (home, float(game_row.get("pred_home_pass_yds") or 230), float(game_row.get("pred_home_rush_yds") or 115)),
         (away, float(game_row.get("pred_away_pass_yds") or 230), float(game_row.get("pred_away_rush_yds") or 115)),
     ]:
+        # A new starter on the defense changes the yards allowed. The old
+        # average was built before he arrived. Receivers are a share of the
+        # quarterback, so the same cut moves both.
+        opp = away if team == home else home
+        cuts = (defense_cuts or {}).get(opp) or {}
+        if cuts.get("rush"):
+            team_rush_pred = max(40.0, team_rush_pred - float(cuts["rush"]))
         tdf = week_df.filter(pl.col("team") == team)
         if out_l:
             tdf = tdf.filter(~pl.col("player_name").str.to_lowercase().is_in(list(out_l)))
         if tdf.is_empty():
             continue
 
-        qb_depth = _depth_starters(depth_charts, team, positions={"QB"}, max_depth=2)
+        qb_depth = _depth_starters(depth_charts, team, positions={"QB"}, max_depth=4)
         skill_depth = _depth_starters(
             depth_charts, team, positions={"RB", "HB", "FB", "WR", "TE"}, max_depth=3
         )
+        starter_rank = _next_qb_rank(qb_depth, out_l)
 
-        # Pass props: current depth-chart QB1 only (never stale ex-starters)
+        # Pass props: the first quarterback on the depth chart who is not out or doubtful.
         passers = tdf.filter(
             pl.col("roll_pass").is_not_null()
             & (
@@ -397,16 +657,16 @@ def project_props_for_game(
                 | pl.col("position").cast(pl.Utf8).str.to_uppercase().str.starts_with("QB")
             )
         )
-        if qb_depth:
+        if qb_depth and starter_rank is not None:
             keep_names = []
             for r in passers.iter_rows(named=True):
                 d = _name_in_depth(str(r["player_name"]), qb_depth)
-                if d is not None and d <= 1:
+                if d is not None and d == starter_rank:
                     keep_names.append(r["player_name"])
             if keep_names:
                 passers = passers.filter(pl.col("player_name").is_in(keep_names))
             else:
-                # Depth QB1 may have no recent stats (return from injury) — synthesize later
+                # The starter may have no recent stats — synthesize later
                 passers = passers.head(0)
         else:
             # No depth chart: require meaningful recent volume AND same-season row
@@ -418,28 +678,37 @@ def project_props_for_game(
             passers = passers.sort("roll_pass", descending=True).head(1)
 
         # If depth says Watson but no roll row, create a projection from team pass yards
-        if passers.height == 0 and qb_depth:
+        if passers.height == 0 and qb_depth and starter_rank is not None:
             qb1_display = None
-            if depth_charts is not None and not depth_charts.is_empty():
+            if depth_charts is not None and not depth_charts.is_empty() and "full_name" in depth_charts.columns:
                 qb_rows = depth_charts.filter(
                     (pl.col("team") == team)
-                    & (pl.col("depth_team") <= 1)
+                    & (pl.col("depth_team") == starter_rank)
                     & pl.col("position").cast(pl.Utf8).str.to_uppercase().str.starts_with("QB")
+                )
+                qb_rows = qb_rows.filter(
+                    ~pl.col("full_name").str.to_lowercase().is_in(list(out_l or {""}))
                 )
                 if not qb_rows.is_empty():
                     qb1_display = str(qb_rows["full_name"][0])
             if not qb1_display:
-                qb1_display = next((n.title() for n, d in qb_depth.items() if d <= 1), None)
+                qb1_display = next(
+                    (n.title() for n, d in qb_depth.items() if d == starter_rank and not _is_out(n, out_l)),
+                    None,
+                )
             if qb1_display:
+                last = qb1_display.split()[-1].lower()
                 hist = player_rolls.filter(
                     (pl.col("team") == team)
                     & (pl.col("season") >= season - 1)
-                    & pl.col("player_name").str.to_lowercase().str.contains(
-                        qb1_display.split()[-1].lower()
-                    )
+                    & pl.col("player_name").str.to_lowercase().str.contains(last, literal=True)
+                    & pl.col("roll_pass").is_not_null()
                 ).sort(["season", "week"], descending=True).head(1)
+                one_game = None if not hist.is_empty() else _one_game_pass_roll(player_stats, team, qb1_display, season)
                 if not hist.is_empty():
                     passers = hist
+                elif one_game is not None:
+                    passers = one_game
                 else:
                     props.append(
                         {
@@ -474,7 +743,8 @@ def project_props_for_game(
             ]
             if keep:
                 rushers = rushers.filter(pl.col("player_name").is_in(keep))
-        rushers = rushers.sort("roll_rush", descending=True).head(top_n_rush)
+        rush_room = rushers
+        rushers = rush_room.sort("roll_rush", descending=True).head(top_n_rush)
 
         share_ready = "roll_recv_share" in tdf.columns
         if share_ready:
@@ -505,20 +775,34 @@ def project_props_for_game(
             ]
             if keep:
                 receivers = receivers.filter(pl.col("player_name").is_in(keep))
+        recv_room = receivers
         if not share_ready:
             receivers = receivers.sort("roll_recv", descending=True).head(top_n_recv)
 
+        if passers.height and "roll_pass" in passers.columns:
+            passers = passers.filter(pl.col("roll_pass").is_not_null())
         pass_sum = float(passers["roll_pass"].sum()) or 1.0 if passers.height else 1.0
+        blended_pass: float | None = None
         for r in passers.iter_rows(named=True):
             share = float(r["roll_pass"]) / pass_sum
             mu = team_pass_pred * share
             if passers.height == 1:
                 mu = team_pass_pred * 0.92
             roll = float(r["roll_pass"] or 0)
-            if roll and roll == roll:  # not nan
-                mu = 0.35 * roll + 0.65 * mu
+            allowed = (opp_pass_allowed or {}).get(opp)
+            if allowed is not None and cuts.get("pass"):
+                allowed = max(80.0, float(allowed) - float(cuts["pass"]))
+            # What this defense has actually allowed has to move the number.
+            # A 300-yard quarterback against a defense allowing 170 is not a
+            # 277-yard game, and a 170-yard quarterback against a defense
+            # allowing 250 does not drop into the 150s because a receiver is
+            # out. Those targets get thrown to someone else.
+            if roll and roll == roll:
+                pace = mu / 0.92 if passers.height == 1 else mu
+                mu = blend_pass_yards(roll, float(allowed) if allowed is not None else None, pace)
             else:
                 roll = mu
+            blended_pass = mu
             sigma = float(r.get("roll_pass_std") or 55.0)
             sigma = max(sigma, 35.0)
             props.append(
@@ -536,12 +820,112 @@ def project_props_for_game(
                 }
             )
 
+        recent = _recent_team_yards(player_stats, team, season, week)
+        roster = _roster_names(depth_charts, team)
+        # Receiving yards are the quarterback's yards. Every catcher is a share
+        # of that one number, including the tight end and the back. A cap on
+        # the top receiver was leaving a chunk of the passing game with nobody.
+        pass_pool = blended_pass if blended_pass is not None else team_pass_pred
+        if recent:
+            recv_weights = {
+                name: slot["recv"]
+                for name, slot in recent.items()
+                if slot["recv"] > 0 and name.lower() not in out_l
+            }
+            recv_weights = _on_roster(recv_weights, roster)
+        else:
+            recv_weights = {
+                str(row["player_name"]): float(row["roll_recv"])
+                for row in recv_room.iter_rows(named=True)
+                if row.get("roll_recv")
+            }
+        recv_yards = _allocate(recv_weights, pass_pool)
+
+        # Rush yards are the team rush total. An out back's carries stay in
+        # that total and move to the backs who are playing. A returning starter
+        # splits the fill-in's recent work in half instead of both being the lead.
+        if recent:
+            positions = {name: slot["pos"] for name, slot in recent.items()}
+            full_rush = _on_roster(
+                {name: slot["rush"] for name, slot in recent.items() if slot["rush"] > 0},
+                roster,
+            )
+            prior_total = sum(full_rush.values())
+            out_rb = sum(
+                yards
+                for name, yards in full_rush.items()
+                if name.lower() in out_l and positions.get(name, "").upper().startswith("RB")
+            )
+            # Giving the whole pile to the lead back runs about 10 yards high
+            # (113 games, 2023-2026, an out back had at least 20% of the carries).
+            # 70% of that share plus 30% of his own average was the unbiased mix.
+            # The yards that come off him stay in the team total, with the rest
+            # of the backfield. This was not fit to any one game.
+            absorbed = prior_total > 0 and out_rb / prior_total >= 0.20
+            rush_weights = {
+                name: yards for name, yards in full_rush.items() if name.lower() not in out_l
+            }
+            starter = _returning_rb1(depth_charts, injuries, player_stats, team, season, week, out_l)
+            if starter and rush_weights:
+                others = {
+                    name: yards
+                    for name, yards in rush_weights.items()
+                    if name.lower() != starter.lower() and positions.get(name, "").upper().startswith("RB")
+                }
+                if others:
+                    fill_in = max(others, key=others.get)
+                    half = rush_weights[fill_in] / 2.0
+                    rush_weights[fill_in] = half
+                    rush_weights[starter] = half
+                    absorbed = False
+            rush_yards = _allocate(rush_weights, team_rush_pred)
+            if absorbed and rush_yards:
+                backs = [
+                    name
+                    for name in rush_yards
+                    if positions.get(name, "").upper().startswith("RB")
+                ]
+                rolls = {
+                    str(row["player_name"]): float(row["roll_rush"])
+                    for row in rush_room.iter_rows(named=True)
+                    if row.get("roll_rush")
+                }
+                if backs:
+                    lead = max(backs, key=lambda name: rush_yards[name])
+                    own = rolls.get(lead)
+                    if own:
+                        rush_yards[lead] = min(
+                            team_rush_pred, 0.70 * rush_yards[lead] + 0.30 * own
+                        )
+        else:
+            qb_rolls = {
+                str(row["player_name"]): float(row["roll_rush"])
+                for row in rush_room.iter_rows(named=True)
+                if str(row.get("position") or "").upper().startswith("QB") and row.get("roll_rush")
+            }
+            back_rolls = {
+                str(row["player_name"]): float(row["roll_rush"])
+                for row in rush_room.iter_rows(named=True)
+                if not str(row.get("position") or "").upper().startswith("QB") and row.get("roll_rush")
+            }
+            # No game log to share from. The quarterback keeps his own average
+            # and the backs split whatever rushing is left.
+            rush_yards = dict(qb_rolls)
+            rush_yards.update(_allocate(back_rolls, max(0.0, team_rush_pred - sum(qb_rolls.values()))))
+
         rush_sum = float(rushers["roll_rush"].sum()) or 1.0
         for r in rushers.iter_rows(named=True):
             share = float(r["roll_rush"]) / rush_sum
             team_share_mu = team_rush_pred * min(share, 0.55)
             roll = float(r["roll_rush"])
-            mu = 0.55 * roll + 0.45 * team_share_mu
+            is_qb = str(r.get("position") or "").upper().startswith("QB")
+            # A quarterback's short rushing scores are not a yardage bet, but
+            # his rushing yards are still part of the team total when we know
+            # the backfield's shares.
+            if r["player_name"] in rush_yards:
+                mu = rush_yards[r["player_name"]]
+            else:
+                mu = roll if is_qb else 0.55 * roll + 0.45 * team_share_mu
             sigma = float(r.get("roll_rush_std") or 25.0)
             sigma = max(sigma, 18.0)
             props.append(
@@ -616,6 +1000,15 @@ def project_props_for_game(
                     }
                 )
 
+        passing = _split_sentence(pass_pool, recv_yards, "passing yards", "the rest of the room")
+        rushing = _split_sentence(team_rush_pred, rush_yards, "rushing yards", "the rest of the backfield")
+        allocation = " ".join(part for part in (passing, rushing) if part)
+        if allocation:
+            for prop in reversed(props):
+                if prop.get("team") == team and prop.get("market") == "player_pass_yds":
+                    prop["allocation"] = allocation
+                    break
+
     return props
 
 
@@ -637,16 +1030,37 @@ def project_slate_props(
     player_stats: pl.DataFrame,
     depth_charts: pl.DataFrame | None = None,
     injuries: pl.DataFrame | None = None,
+    live_outs: set[str] | None = None,
 ) -> pl.DataFrame:
     from nfl_edge.features.injuries import normalize_depth_charts
 
     rolls = rolling_player_yards(player_stats)
     dc = normalize_depth_charts(depth_charts) if depth_charts is not None and not depth_charts.is_empty() else None
+    allowed_cache: dict[tuple[int, int], dict[str, float]] = {}
     all_props: list[dict] = []
     for r in predictions.iter_rows(named=True):
-        out = _ruled_out(injuries, int(r["season"]), int(r["week"]))
+        key = (int(r["season"]), int(r["week"]))
+        if key not in allowed_cache:
+            allowed_cache[key] = pass_yards_allowed_by_defense(player_stats, key[0], key[1])
+        out = _ruled_out(injuries, key[0], key[1]) | {str(n).lower() for n in (live_outs or set()) if n}
+        from nfl_edge.models.matchup_parlays import starter_yard_cuts
+
+        cuts = {
+            team: starter_yard_cuts(player_stats, depth_charts, team, key[0], key[1])
+            for team in (r.get("home_team"), r.get("away_team"))
+            if team
+        }
         all_props.extend(
-            project_props_for_game(game_row=r, player_rolls=rolls, depth_charts=dc, out_players=out)
+            project_props_for_game(
+                game_row=r,
+                player_rolls=rolls,
+                depth_charts=dc,
+                out_players=out,
+                opp_pass_allowed=allowed_cache[key],
+                player_stats=player_stats,
+                injuries=injuries,
+                defense_cuts=cuts,
+            )
         )
     if not all_props:
         return pl.DataFrame()

@@ -10,6 +10,7 @@ from nfl_edge.features.ratings import (
     league_avg_points,
     rolling_team_ratings,
 )
+from nfl_edge.features.detail import build_detail_features
 from nfl_edge.features.elo import build_elo_table
 from nfl_edge.features.script import (
     build_te_allowed_lookup,
@@ -70,7 +71,12 @@ def build_matchup_frame(
     mm_scale = float(deep_cfg.get("mismatch_scale", 0.45))
     sit_w = float((weights.get("situational") or {}).get("weight", 1.0)) if use_situational else 0.0
     elo_w = float((weights.get("elo") or {}).get("blend", 0.55))
+    field_w = float((weights.get("detail") or {}).get("field_weight", 0.0))
     games = enrich_schedule_weather(schedules, weights)
+    if field_w:
+        detail = build_detail_features(schedules, team_stats)
+        if not detail.is_empty():
+            games = games.join(detail.select(["game_id", "field_margin_adj"]), on="game_id", how="left")
 
     log = build_team_game_log(schedules)
     if team_stats is not None and not team_stats.is_empty():
@@ -132,6 +138,7 @@ def build_matchup_frame(
         "away_pace_rush_pct": 0.0,
         "pace_total_adj": 0.0,
         "situational_net_margin": 0.0,
+        "field_margin_adj": 0.0,
     }
     for col, val in fill_defaults.items():
         if col in games.columns:
@@ -197,10 +204,19 @@ def build_matchup_frame(
         points_margin = home_pts - away_pts
         points_total = home_pts + away_pts
 
-        # Elo blend
+        # Elo blend. Elo has no injury input, so a QB who is out was only moving
+        # the 38% points share (~2 points on a 5-point deduction). Put the rest
+        # of the injury margin back after the blend. Totals already include it.
         er = elo_by_id.get(r["game_id"], {})
         elo_margin = float(er.get("elo_pred_margin") or points_margin)
         margin = elo_w * elo_margin + (1.0 - elo_w) * points_margin
+        if use_injuries:
+            inj_diff = float(r.get("home_inj_points") or 0.0) - float(r.get("away_inj_points") or 0.0)
+            margin += elo_w * inj_diff
+        # Extra home edge for this team and this stadium, beyond the flat league
+        # home-field already inside the points model and Elo. Margin only.
+        if field_w:
+            margin += field_w * float(r.get("field_margin_adj") or 0.0)
         # keep total from points model (Elo doesn't predict totals well alone)
         total = points_total
         # rescale team points to match blended margin

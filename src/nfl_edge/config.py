@@ -21,6 +21,7 @@ load_dotenv(ROOT / ".env")
 START_SEASON = int(os.getenv("NFL_EDGE_START_SEASON", "2006"))
 ODDS_API_KEY = os.getenv("ODDS_API_KEY", "")
 ODDS_BOOK = os.getenv("ODDS_BOOK", "draftkings")
+BBS_API_KEY = os.getenv("BBS_API_KEY", "")
 
 # Current-season data (scores, injuries, depth charts, stats) is re-downloaded once
 # its cache is older than this. Completed seasons never change, so they stay cached.

@@ -20,7 +20,7 @@ DEFAULT_WEIGHTS = {
         },
         "recent_form": {
             "weight": 0.22,
-            "description": "Rolling points for/against (last 4 games)",
+            "description": "Last 4 games. The total uses points scored and allowed, not just the margin",
         },
         "home_field": {
             "weight": 0.14,
@@ -64,7 +64,7 @@ DEFAULT_WEIGHTS = {
     "similar_scale": 0.12,
     "margin_sigma": 16.5,
     "total_sigma": 12.0,
-    "league_total": 52.0,
+    "league_total": 53.0,
     "edge_thresholds": {
         "totals_min_ev": 0.04,
         "spreads_min_ev": 0.05,

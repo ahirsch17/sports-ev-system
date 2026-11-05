@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import polars as pl
 
@@ -13,6 +14,50 @@ from cfb_edge.ingest import data_source_used, load_schedules
 from cfb_edge.scoring import score_game, similar_opp_signal
 from cfb_edge.weights import factor_list, load_weights, save_weights
 from nfl_edge.odds_math import expected_value, implied_to_american, margin_to_home_win_prob, normal_cdf, prob_over_line
+
+
+EASTERN = ZoneInfo("America/New_York")
+
+
+def _kickoff(start: Any) -> tuple[str | None, str]:
+    """Source timestamps are UTC. The board shows Eastern kickoff."""
+    raw = str(start or "")
+    if "T" not in raw:
+        return None, ""
+    try:
+        stamp = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None, ""
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    local = stamp.astimezone(EASTERN)
+    return local.date().isoformat(), f"{local.hour:02d}:{local.minute:02d}"
+
+
+def _rate(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number != number:
+        return None
+    return round(number, 1)
+
+
+def _recent(value: Any) -> list[int]:
+    text = str(value or "")
+    out: list[int] = []
+    for part in text.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            out.append(int(part))
+        except ValueError:
+            continue
+    return out
 
 
 def _rivalry_flag(notes: Any, home: str, away: str) -> bool:
@@ -70,16 +115,18 @@ def predict_games_walkforward(
         elo_margin = (rh + hfa - ra) * ppe
 
         # rolling form from prior games only
-        def form_diff(team: str) -> float:
+        def form_view(team: str) -> tuple[float, float | None, float | None, str]:
             hist = form_hist.get(team) or []
             if not hist:
-                return 0.0
+                return 0.0, None, None, ""
             tail = hist[-form_n:]
             pf = sum(x[0] for x in tail) / len(tail)
             pa = sum(x[1] for x in tail) / len(tail)
-            return pf - pa
+            recent = ",".join(str(int(round(x[0]))) for x in hist[-6:])
+            return pf - pa, pf, pa, recent
 
-        fh, fa = form_diff(home), form_diff(away)
+        fh, home_for, home_against, home_recent = form_view(home)
+        fa, away_for, away_against, away_recent = form_view(away)
 
         # rest
         day_s = str(r.get("gameday") or "")[:10]
@@ -107,6 +154,10 @@ def predict_games_walkforward(
             similar_home=sim_h,
             similar_away=sim_a,
             weights=weights,
+            home_for=home_for,
+            home_against=home_against,
+            away_for=away_for,
+            away_against=away_against,
         )
         margin = float(scored["pred_margin"])
         total = float(scored["pred_total"])
@@ -138,6 +189,14 @@ def predict_games_walkforward(
                 "actual_home_score": r.get("home_score"),
                 "actual_away_score": r.get("away_score"),
                 "high_confidence": abs(margin) >= float((weights.get("confidence") or {}).get("min_abs_margin", 10)),
+                "home_scored": None if home_for is None else round(home_for, 2),
+                "home_allowed": None if home_against is None else round(home_against, 2),
+                "away_scored": None if away_for is None else round(away_for, 2),
+                "away_allowed": None if away_against is None else round(away_against, 2),
+                "home_recent": home_recent,
+                "away_recent": away_recent,
+                "venue": r.get("venue"),
+                "start_date": r.get("start_date"),
             }
         )
 
@@ -332,12 +391,16 @@ def predict_cfb_slate(
         home_win = float(r["home_win_prob"])
         high = abs(margin) >= conf_min
         home, away = str(r["home_team"]), str(r["away_team"])
+        kick_day, kick_time = _kickoff(r.get("start_date"))
         games_out.append(
             {
                 "game_id": r.get("game_id"),
                 "season": season,
                 "week": week,
-                "gameday": r.get("gameday"),
+                "gameday": kick_day or r.get("gameday"),
+                "gametime": kick_time,
+                "stadium": r.get("venue") or "",
+                "location": "Neutral" if r.get("neutral_site") else "Home",
                 "home_team": home,
                 "away_team": away,
                 "home_conference": r.get("home_conference"),
@@ -356,6 +419,13 @@ def predict_cfb_slate(
                 "high_confidence": high,
                 "actual_home_score": r.get("actual_home_score"),
                 "actual_away_score": r.get("actual_away_score"),
+                "home_scored": _rate(r.get("home_scored")),
+                "home_allowed": _rate(r.get("home_allowed")),
+                "away_scored": _rate(r.get("away_scored")),
+                "away_allowed": _rate(r.get("away_allowed")),
+                "home_recent": _recent(r.get("home_recent")),
+                "away_recent": _recent(r.get("away_recent")),
+                "league_total": round(float(weights.get("league_total", 53.0)), 1),
                 "injuries_note": "CFB injury data sparse; model does not use injuries",
                 "suggested_bets": _suggest_bets(
                     home, away, margin, total, home_win, sigma, weights, high_conf=high
@@ -371,7 +441,7 @@ def predict_cfb_slate(
     if games_out:
         pl.DataFrame(
             [
-                {k: v for k, v in g.items() if k not in {"suggested_bets"}}
+                {k: v for k, v in g.items() if k not in {"suggested_bets", "home_recent", "away_recent"}}
                 for g in games_out
             ]
         ).write_csv(OUTPUT_DIR / f"cfb_{season}_w{week}_predictions.csv")

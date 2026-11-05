@@ -83,6 +83,39 @@ def similar_opp_signal(
     return max(-4.0, min(4.0, avg * scale))
 
 
+def _side_points(scored: float | None, allowed: float | None, league_ppg: float) -> float:
+    """Half of what this offense scores, half of what that defense allows.
+
+    Pulled toward the league because a college sample is four games, not a season.
+    The points already include the extra plays from a clock that stops on first
+    downs, so nothing is added on top of them.
+    """
+    if scored is None or allowed is None:
+        return league_ppg
+    raw = 0.5 * scored + 0.5 * allowed
+    return 0.62 * raw + 0.38 * league_ppg
+
+
+def _scoring_total(
+    home_for: float | None,
+    home_against: float | None,
+    away_for: float | None,
+    away_against: float | None,
+    league_total: float,
+) -> float:
+    """Matchup total. A 40–40 team and a 20–20 team are not the same game.
+
+    2023–2025 both-FBS games averaged 53.3 points. Finals decided by 21 or more
+    averaged 56.4, and games within 7 averaged 52.2, so a wide margin does not
+    cut the total.
+    """
+    league_ppg = league_total / 2.0
+    total = _side_points(home_for, away_against, league_ppg) + _side_points(
+        away_for, home_against, league_ppg
+    )
+    return max(35.0, min(80.0, total))
+
+
 def score_game(
     *,
     elo_pred_margin: float,
@@ -96,12 +129,17 @@ def score_game(
     similar_home: float,
     similar_away: float,
     weights: dict | None = None,
+    home_for: float | None = None,
+    home_against: float | None = None,
+    away_for: float | None = None,
+    away_against: float | None = None,
 ) -> dict[str, Any]:
     """
     Blend Elo + form + rest/conf/similar into predicted home margin.
 
     HFA lives primarily inside elo_pred_margin (via Elo hfa_elo). The home_field
     factor is documented for UI; a small absolute nudge remains for non-neutral.
+    The total is separate: points scored and points allowed, not the margin.
     """
     weights = weights or load_weights()
     factors = {f["key"]: f["weight"] for f in factor_list(weights)}
@@ -154,10 +192,22 @@ def score_game(
         + sim_margin * min(1.0, sim_w / 0.05)
     )
 
-    league_total = float(weights.get("league_total", 52.0))
-    home_pf = 26.0 + form_home_diff * 0.10 + margin / 2
-    away_pf = 26.0 + form_away_diff * 0.10 - margin / 2
-    total = max(35.0, min(80.0, 0.40 * (home_pf + away_pf) + 0.60 * league_total))
+    league_total = float(weights.get("league_total", 53.0))
+    total = _scoring_total(
+        home_for,
+        home_against,
+        away_for,
+        away_against,
+        league_total,
+    )
+    home_points = (total + margin) / 2
+    away_points = (total - margin) / 2
+    if away_points < 0:
+        away_points = 0.0
+        home_points = total
+    elif home_points < 0:
+        home_points = 0.0
+        away_points = total
 
     breakdown = [
         {
@@ -211,7 +261,7 @@ def score_game(
     return {
         "pred_margin": margin,
         "pred_total": total,
-        "pred_home_points": (total + margin) / 2,
-        "pred_away_points": (total - margin) / 2,
+        "pred_home_points": home_points,
+        "pred_away_points": away_points,
         "breakdown": breakdown,
     }

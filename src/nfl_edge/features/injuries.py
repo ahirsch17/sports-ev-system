@@ -7,6 +7,9 @@ import polars as pl
 from nfl_edge.features.weather import load_weights
 
 # Severity scores for report statuses
+# Return and kicking spots are not the depth that sets an offensive penalty.
+_SPECIAL = {"P", "K", "H", "LS", "PR", "KR", "KO", "PT", "PK"}
+
 STATUS_SEVERITY = {
     "Out": 1.0,
     "Doubtful": 0.75,
@@ -186,12 +189,9 @@ def recent_starting_qbs(player_stats: pl.DataFrame, *, season: int, week: int) -
     if prior.is_empty():
         return {}
 
-    weekly = prior.sort("_att", descending=True).unique(subset=[team_col, "week", "season"], keep="first")
-    latest = prior.group_by(team_col).agg(pl.col("week").max().alias("last_week"))
-    last_starters = prior.join(latest, left_on=team_col, right_on=team_col).filter(
-        pl.col("week") == pl.col("last_week")
-    )
-    last_starters = last_starters.sort("_att", descending=True).unique(subset=[team_col], keep="first")
+    # One row per team-week: the passer with the most attempts that week.
+    weekly = prior.sort("_att", descending=True).unique(subset=[team_col, "season", "week"], keep="first")
+    weekly = weekly.sort([team_col, "season", "week"])
 
     def _pid(row: dict) -> str:
         return str(row.get(id_col) or "") if id_col else ""
@@ -199,43 +199,44 @@ def recent_starting_qbs(player_stats: pl.DataFrame, *, season: int, week: int) -
     def _pname(row: dict) -> str:
         return str(row.get(name_col) or row.get("full_name") or "") if name_col else ""
 
+    # Only the current starter is QB1. A backup who started a game in a prior
+    # season (Bagent, Mariota, O'Connell) used to stay in known_starter_ids
+    # forever, so his DNP was priced as the starter being out. Week number
+    # also restarts each season, so max(week) picked last year's week 18
+    # instead of this year's last start.
     out: dict[str, dict] = {}
-    for r in last_starters.iter_rows(named=True):
-        team = str(r[team_col])
+    current: dict | None = None
+    current_team: str | None = None
+
+    def _commit(team: str, row: dict) -> None:
+        gid = _pid(row)
+        nm = _pname(row) or "QB1"
+        names: dict[str, str] = {}
+        if nm:
+            names[nm.lower()] = nm
+        if gid and nm:
+            names[gid] = nm
         out[team] = {
-            "gsis_id": _pid(r),
-            "name": _pname(r) or "QB1",
-            "attempts": float(r.get("_att") or 0),
-            "known_starter_ids": set(),
-            "known_starter_names": {},
+            "gsis_id": gid,
+            "name": nm,
+            "attempts": float(row.get("_att") or 0),
+            "known_starter_ids": {gid} if gid else set(),
+            "known_starter_names": names,
         }
 
     for r in weekly.iter_rows(named=True):
         team = str(r[team_col])
-        gid = _pid(r)
-        nm = _pname(r) or gid or "QB1"
-        if not gid and not nm:
-            continue
-        if team not in out:
-            out[team] = {
-                "gsis_id": gid,
-                "name": nm,
-                "attempts": float(r.get("_att") or 0),
-                "known_starter_ids": set(),
-                "known_starter_names": {},
-            }
-        if gid:
-            out[team]["known_starter_ids"].add(gid)
-        if nm:
-            out[team]["known_starter_names"][nm.lower()] = nm
-            if gid:
-                out[team]["known_starter_names"][gid] = nm
-        # Relief-heavy last week: prefer earlier heavy starter as primary label
-        if float(out[team].get("attempts") or 0) < 12 and float(r.get("_att") or 0) >= 12:
-            out[team]["gsis_id"] = gid
-            out[team]["name"] = nm
-            out[team]["attempts"] = float(r.get("_att") or 0)
-
+        if team != current_team:
+            if current_team is not None and current is not None:
+                _commit(current_team, current)
+            current_team = team
+            current = None
+        att = float(r.get("_att") or 0)
+        # A short relief appearance does not take the job. A real start does.
+        if current is None or att >= 12:
+            current = r
+    if current_team is not None and current is not None:
+        _commit(current_team, current)
     return out
 
 
@@ -275,7 +276,8 @@ def team_injury_impact(
 
     starters: set[str] = set()
     starter_pos: dict[str, str] = {}
-    depth_rank: dict[str, int] = {}
+    starter_rank: dict[str, int] = {}
+    depth_by_pos: dict[str, dict[str, int]] = {}
     name_by_id: dict[str, str] = {}
 
     dc = depth_charts
@@ -296,13 +298,16 @@ def team_injury_impact(
             if not gid:
                 continue
             gid = str(gid)
-            pos = str(row.get("position") or "")
+            pos = str(row.get("position") or "").upper()
             rank = int(row.get("depth_team") or 99)
-            depth_rank[gid] = rank
+            slot = depth_by_pos.setdefault(gid, {})
+            if pos not in slot or rank < slot[pos]:
+                slot[pos] = rank
             name_by_id[gid] = str(row.get("full_name") or "")
-            if rank <= 2:
+            if rank <= 2 and pos not in _SPECIAL and rank < starter_rank.get(gid, 99):
                 starters.add(gid)
                 starter_pos[gid] = pos
+                starter_rank[gid] = rank
 
     recent_gid = str((recent_qb or {}).get("gsis_id") or "")
     recent_name = str((recent_qb or {}).get("name") or "")
@@ -310,6 +315,8 @@ def team_injury_impact(
     if recent_gid:
         known_ids.add(recent_gid)
     known_names: dict[str, str] = dict((recent_qb or {}).get("known_starter_names") or {})
+    has_known_starter = bool(known_ids or known_names)
+    qb1_applied = False
 
     for row in week_inj.iter_rows(named=True):
         gid = str(row.get("gsis_id") or "")
@@ -319,13 +326,19 @@ def team_injury_impact(
         sev = _row_severity(row, is_qb=is_qb)
         if sev <= 0:
             continue
-        depth = depth_rank.get(gid, 1 if gid in starters else 3)
+        slot = depth_by_pos.get(gid) or {}
+        if pos in slot:
+            depth = slot[pos]
+        else:
+            real = [r for p, r in slot.items() if p not in _SPECIAL]
+            depth = min(real) if real else (1 if gid in starters else 3)
         was_starter = bool(
             (gid and gid in known_ids)
             or (pname and pname.lower() in known_names)
             or (pname and any(pname.lower() == str(v).lower() for v in known_names.values()))
         )
-        # Last week's / season starter still counts as QB1 even if depth chart flipped
+        # The current starter stays QB1 even if the depth chart has already flipped
+        # to the backup. A former starter who is not the current one does not.
         if was_starter:
             depth = 1
             is_qb = True
@@ -335,10 +348,11 @@ def team_injury_impact(
             continue
 
         if is_qb:
-            # QB1 = depth chart #1 OR known recent starter. Do NOT promote depth-2
-            # DNP (e.g. Bagent) into qb1_out — that overwrote Caleb Williams' note.
-            is_qb1 = depth <= 1 or was_starter
-            if is_qb1:
+            # QB1 only when this is the current starter. With no starter history,
+            # fall back to depth-chart QB1. Never stack a second QB1 penalty.
+            is_qb1 = was_starter or (not has_known_starter and depth <= 1)
+            if is_qb1 and not qb1_applied:
+                qb1_applied = True
                 impact["points"] = float(impact["points"]) + float(w["qb1_out_points"]) * sev
                 impact["pass_yards_pct"] = float(impact["pass_yards_pct"]) - 0.25 * sev
                 # Only raise qb_out / note for true starter (don't let backup DNP overwrite)

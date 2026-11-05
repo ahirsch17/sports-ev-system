@@ -10,7 +10,7 @@ import polars as pl
 from nfl_edge.features.weather import load_weights
 from nfl_edge.models.game import cover_prob, total_side_probs
 from nfl_edge.models.props import prop_over_prob
-from nfl_edge.odds_math import american_to_implied, expected_value, implied_to_american
+from nfl_edge.odds_math import american_to_implied, expected_value, implied_to_american, margin_to_home_win_prob
 
 
 # Map nflverse abbreviations / Odds API names loosely
@@ -133,7 +133,13 @@ def compute_main_edges(
         pred = find_prediction(predictions, home, away)
         if not pred:
             continue
-        high_conf = abs(float(pred.get("pred_margin") or 0)) >= conf_min
+        raw_margin = pred.get("model_margin")
+        if raw_margin is None:
+            raw_margin = pred.get("pred_margin")
+        raw_total = pred.get("model_total")
+        if raw_total is None:
+            raw_total = pred.get("pred_total")
+        high_conf = abs(float(raw_margin or 0)) >= conf_min
         market_probs = _no_vig_probs(rows)
 
         for idx, row in enumerate(rows):
@@ -149,7 +155,7 @@ def compute_main_edges(
 
             if market == "h2h":
                 min_ev = float(thr.get("h2h_min_ev", 0.05))
-                p_home = float(pred["home_win_prob"])
+                p_home = margin_to_home_win_prob(float(raw_margin or 0), margin_sigma)
                 sel_abbr = normalize_team(str(selection))
                 if sel_abbr == normalize_team(home):
                     model_prob = p_home
@@ -164,20 +170,20 @@ def compute_main_edges(
                 min_ev = float(thr.get("spreads_min_ev", 0.05))
                 sel_abbr = normalize_team(str(selection))
                 if sel_abbr == normalize_team(home):
-                    model_prob = cover_prob(float(pred["pred_margin"]), float(point), margin_sigma)
+                    model_prob = cover_prob(float(raw_margin or 0), float(point), margin_sigma)
                     label = f"{home} {point:+g}"
                 elif sel_abbr == normalize_team(away):
                     # away spread: equivalent home spread is -point for away line
                     # If away is +3.5, home spread is -3.5; P(away covers)=1-P(home covers at -3.5)
                     home_spread = -float(point)
-                    model_prob = 1 - cover_prob(float(pred["pred_margin"]), home_spread, margin_sigma)
+                    model_prob = 1 - cover_prob(float(raw_margin or 0), home_spread, margin_sigma)
                     label = f"{away} {point:+g}"
                 else:
                     continue
 
             elif market == "totals" and point is not None:
                 min_ev = float(thr.get("totals_min_ev", 0.04))
-                p_over, p_under = total_side_probs(float(pred["pred_total"]), float(point), total_sigma)
+                p_over, p_under = total_side_probs(float(raw_total or 0), float(point), total_sigma)
                 if str(selection).lower().startswith("over"):
                     model_prob = p_over
                     label = f"Over {point}"

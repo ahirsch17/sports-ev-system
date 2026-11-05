@@ -6,7 +6,7 @@
     },
     "recent_form": {
       "weight": 0.22,
-      "description": "Rolling points for/against (last 4 games)"
+      "description": "Last 4 games. The total uses points scored and allowed, not just the margin"
     },
     "home_field": {
       "weight": 0.14,
@@ -50,7 +50,7 @@
   "hfa_extra_points": 0.4,
   "margin_sigma": 16.5,
   "total_sigma": 12.0,
-  "league_total": 52.0,
+  "league_total": 53.0,
   "edge_thresholds": {
     "totals_min_ev": 0.04,
     "spreads_min_ev": 0.05,
@@ -60,5 +60,5 @@
     "min_abs_margin": 10.0,
     "notes": "Walk-forward gated accuracy 0.9167 on |margin|>=10 (n=420)"
   },
-  "notes": "CFB audit chose elo_form_k28_hfa65_b0.6: K=28.0, HFA_elo=65.0, blend=0.6, gate=10. Rest/conference/similar weights intentionally 0 after ablation (full family did not beat elo+form). Injuries unused. Gated ~92% is both-FBS only (cupcakes excluded); favorites are often chalk so accuracy != +EV. Source: cfbfastR-data schedules (GitHub CSV / CFBD-backed)."
+  "notes": "CFB audit chose elo_form_k28_hfa65_b0.6: K=28.0, HFA_elo=65.0, blend=0.6, gate=10. Rest/conference/similar weights intentionally 0 after ablation (full family did not beat elo+form). Injuries unused. Gated ~92% is both-FBS only (cupcakes excluded); favorites are often chalk so accuracy != +EV. League total 53 is the 2023-2025 both-FBS average. The game total is the matchup of points scored and allowed, shrunk toward that, because a four-game sample is short. Wide margins are not cut: games decided by 21+ scored more than close games. Source: cfbfastR-data schedules (GitHub CSV / CFBD-backed)."
 }

@@ -27,7 +27,7 @@ def _f_ev(e: dict) -> float:
 
 @app.get("/", response_class=HTMLResponse)
 def index():
-    return FileResponse(STATIC / "index.html")
+    return FileResponse(STATIC / "index.html", headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/nfl")
@@ -69,9 +69,56 @@ def api_nfl(week: int | None = None, season: int | None = None):
         "board": board,
         "edges": advice["best_singles"],
         "parlays": advice["best_parlays"],
+        "matchup_parlays": slate.get("matchup_parlays") or [],
         "advice": advice,
         "data": slate.get("data") or {},
     }
+
+
+@app.get("/api/nfl/charts/{game_id}")
+def api_nfl_charts(
+    game_id: str,
+    our_away: float,
+    our_home: float,
+    book_away: float | None = None,
+    book_home: float | None = None,
+    away_color: str | None = None,
+    home_color: str | None = None,
+    payout: int | None = None,
+    floor: int = 224,
+    payout_label: str = "Two bets",
+):
+    """SVG figures for one game. The list page does not wait on these."""
+    from nfl_edge.ingest.nflverse import load_schedules
+
+    from ui.charts import payout_chart, recent_points, score_chart, trend_chart
+
+    parts = game_id.split("_")
+    if len(parts) != 4:
+        raise HTTPException(status_code=404, detail="Unknown game")
+    season, week, away, home = int(parts[0]), int(parts[1]), parts[2], parts[3]
+    schedules = load_schedules([season - 1, season])
+    charts = {
+        "score": score_chart(
+            away=away,
+            home=home,
+            our_away=our_away,
+            our_home=our_home,
+            book_away=book_away,
+            book_home=book_home,
+        ),
+        "trend": trend_chart(
+            away,
+            home,
+            recent_points(schedules, away, season, week),
+            recent_points(schedules, home, season, week),
+            away_color=away_color,
+            home_color=home_color,
+        ),
+    }
+    if payout is not None:
+        charts["payout"] = payout_chart(label=payout_label, payout=int(payout), floor=int(floor))
+    return charts
 
 
 @app.post("/api/refresh")

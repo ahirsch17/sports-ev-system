@@ -191,7 +191,15 @@ def predict_cmd(
     )
     preds_week = preds_all.filter((pl.col("season") == season) & (pl.col("week") == week))
 
-    props = project_slate_props(preds_week, player_stats, depth_charts=depth, injuries=injuries)
+    from nfl_edge.ingest.espn_injuries import live_outs_for_week
+
+    props = project_slate_props(
+        preds_week,
+        player_stats,
+        depth_charts=depth,
+        injuries=injuries,
+        live_outs=live_outs_for_week(injuries, season, week),
+    )
 
     out = OUTPUT_DIR / f"week_{season}_{week}_predictions.csv"
     preds_week.write_csv(out)
