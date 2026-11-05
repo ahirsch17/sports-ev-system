@@ -494,6 +494,7 @@ function renderCfb(game) {
   window.scrollTo(0, 0);
   document.querySelector("#back").addEventListener("click", () => {
     state.gameId = null;
+    writePlace(true);
     renderList();
     window.scrollTo(0, 0);
   });
@@ -525,6 +526,7 @@ function renderDetail(game) {
   window.scrollTo(0, 0);
   document.querySelector("#back").addEventListener("click", () => {
     state.gameId = null;
+    writePlace(true);
     renderList();
     window.scrollTo(0, 0);
   });
@@ -553,6 +555,27 @@ async function loadCharts(game, card, ticket) {
   }
 }
 
+function knownSport(value) {
+  const sport = String(value || "NFL").toUpperCase();
+  return sport === "MLB" || sport === "CFB" ? sport : "NFL";
+}
+
+function place() {
+  const parts = location.hash.replace(/^#\/?/, "").split("/").filter(Boolean);
+  return {
+    sport: knownSport(parts[0]),
+    gameId: parts[1] ? decodeURIComponent(parts[1]) : null,
+  };
+}
+
+function writePlace(push) {
+  const game = state.gameId ? `/${encodeURIComponent(state.gameId)}` : "";
+  const next = `#/${state.sport}${game}`;
+  if (location.hash === next) return;
+  const update = push ? history.pushState.bind(history) : history.replaceState.bind(history);
+  update.call(history, null, "", next);
+}
+
 function render() {
   document.querySelectorAll(".sport").forEach((button) => {
     button.classList.toggle("on", button.dataset.sport === state.sport);
@@ -562,28 +585,33 @@ function render() {
     return;
   }
   const game = games().find((item) => String(item.game_id) === String(state.gameId));
+  if (state.gameId && !game) {
+    state.gameId = null;
+    writePlace(false);
+  }
   if (game && state.sport === "NFL") renderDetail(game);
   else if (game && state.sport === "CFB") renderCfb(game);
   else renderList();
 }
 
-async function loadSport(sport) {
+async function loadSport(sport, gameId) {
   const request = ++state.request;
-  state.sport = sport;
-  state.gameId = null;
+  state.sport = knownSport(sport);
+  state.gameId = gameId || null;
   state.data = null;
+  writePlace(false);
   render();
-  const url = sport === "NFL" ? "/api/nfl" : sport === "CFB" ? "/api/cfb" : "/api/mlb?days=2";
+  const url = state.sport === "NFL" ? "/api/nfl" : state.sport === "CFB" ? "/api/cfb" : "/api/mlb?days=2";
   try {
     const res = await fetch(url);
     if (request !== state.request) return;
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
-    if (request !== state.request || (data.sport && data.sport !== sport)) return;
+    if (request !== state.request || (data.sport && data.sport !== state.sport)) return;
     state.data = data;
   } catch (err) {
     if (request !== state.request) return;
-    app.innerHTML = `<p class="error">Could not load ${clean(sport)}. ${clean(err.message)}</p>`;
+    app.innerHTML = `<p class="error">Could not load ${clean(state.sport)}. ${clean(err.message)}</p>`;
     return;
   }
   render();
@@ -594,6 +622,7 @@ document.querySelector(".sports").addEventListener("click", (event) => {
   if (!button) return;
   if (button.dataset.sport === state.sport) {
     state.gameId = null;
+    writePlace(true);
     render();
     return;
   }
@@ -605,6 +634,7 @@ document.querySelector(".brand").addEventListener("click", (event) => {
   if (state.sport !== "NFL") loadSport("NFL");
   else {
     state.gameId = null;
+    writePlace(true);
     render();
   }
 });
@@ -613,6 +643,7 @@ app.addEventListener("click", (event) => {
   const button = event.target.closest("[data-game]");
   if (!button || (state.sport !== "NFL" && state.sport !== "CFB")) return;
   state.gameId = button.dataset.game;
+  writePlace(true);
   render();
 });
 
@@ -624,7 +655,18 @@ document.querySelector("#refresh").addEventListener("click", async () => {
     /* The next load still shows what we have. */
   }
   document.querySelector("#refresh").disabled = false;
-  loadSport(state.sport);
+  loadSport(state.sport, state.gameId);
 });
 
-loadSport("NFL");
+window.addEventListener("popstate", () => {
+  const here = place();
+  if (here.sport !== state.sport) {
+    loadSport(here.sport, here.gameId);
+    return;
+  }
+  state.gameId = here.gameId;
+  render();
+});
+
+const here = place();
+loadSport(here.sport, here.gameId);
